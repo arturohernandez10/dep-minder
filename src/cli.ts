@@ -2,6 +2,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "./config";
+import { collectLayerFiles } from "./collection";
+import {
+  countIssues,
+  formatIssueText,
+  formatLimitFooter,
+  limitIssues,
+  resolveMaxErrors
+} from "./reporting";
+import { validateTraceability } from "./validate";
 
 type OutputFormat = "text" | "json";
 
@@ -148,7 +157,7 @@ function parseArgs(argv: string[]): CliOptions {
   return options;
 }
 
-function main(): void {
+async function main(): Promise<void> {
   try {
     const options = parseArgs(process.argv.slice(2));
 
@@ -173,12 +182,49 @@ function main(): void {
       }
     }
 
+    const collection = await collectLayerFiles(resolvedPath, config);
+
     if (options.debug && !options.quiet) {
       console.log(`Format: ${options.format}`);
       console.log(`Layer: ${options.layer ?? "(all)"}`);
       console.log(`Config version: ${config.version}`);
       console.log(`Max errors: ${options.maxErrors ?? "(config default)"}`);
       console.log(`Strict: ${options.strict ? "yes" : "no"}`);
+      for (const layer of collection.layers) {
+        console.log(`Layer "${layer.name}" files: ${layer.files.length}`);
+      }
+    }
+
+    if (options.format !== "text") {
+      throw new Error("Only text output is supported in this milestone");
+    }
+
+    const issues = validateTraceability(resolvedPath, config, collection, {
+      layer: options.layer
+    });
+    const maxErrors = resolveMaxErrors(config, options.maxErrors);
+    const limited = limitIssues(issues, maxErrors);
+
+    for (const issue of limited.issues) {
+      console.error(formatIssueText(issue));
+    }
+
+    if (limited.truncated) {
+      console.error(formatLimitFooter(maxErrors, config.errors.max_errors_env));
+    }
+
+    const counts = countIssues(issues);
+    const hasErrors = counts.errors > 0;
+    const hasWarnings = counts.warnings > 0;
+
+    if (hasErrors) {
+      console.error(`trace-validate: ${counts.errors} error(s) found.`);
+    } else if (!options.quiet || issues.length === 0) {
+      console.log("trace-validate: no errors found.");
+    }
+
+    if (hasErrors || (options.strict && hasWarnings)) {
+      process.exitCode = 1;
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -187,4 +233,8 @@ function main(): void {
   }
 }
 
-main();
+main().catch((error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`Error: ${message}`);
+  process.exitCode = 1;
+});
