@@ -1,4 +1,4 @@
-## Problem this tool addresses
+# Problem this tool addresses
 
 In a laddered spec (e.g. L0 → L6), you want deterministic propagation of meaning:
 
@@ -18,7 +18,6 @@ Given:
 
 * a repository root,
 * a small YAML config that defines:
-
   * an ordered list of layers (glob + ID patterns),
   * the grouping delimiters and passthrough marker,
   * the error output limit,
@@ -27,32 +26,102 @@ the tool will:
 
 ### Collect files by glob
 
-* Walk the ordered `layers` array; assign each file to the first layer whose glob matches.
+* Walk the ordered `layers` array; assign each file to the **first** layer whose glob matches (first-match-wins).
+* Unmatched files are ignored.
 * “Code is content”: source files are treated the same as markdown/text; no special casing beyond file selection.
+
+## command line interface
+
+* `trace-validate [PATH]`
+  *Default:* `PATH=.` (repo root)
+
+* `-c, --config <file>`
+  Path to config YAML. *Default:* `trace-validator.yml` (look in `PATH`, then current dir).
+
+* `--max-errors <n>`
+  Overrides config/env for this run (still keep `TRACE_MAX_ERRORS` as an env override if you want, but CLI is nicer).
+  *Default:* config default.
+
+* `--format <text|json>`
+  `text` for human/AI diff-friendly blocks; `json` for tooling/CI annotations.
+  *Default:* `text`.
+
+* `--layer <name>`
+  Validate only one downstream layer against its upstream neighbor (e.g., `capabilities` validates `intents -> capabilities`).
+  *Default:* validate all adjacent pairs.
+
+* `--strict`
+  Non-zero exit if *any* error; without strict you can still exit non-zero on errors, but `--strict` is useful if you later introduce warnings/info.
+  *Default:* treat all emitted issues as errors (so `--strict` is mostly future-proofing).
+
+* `-q, --quiet`
+  Suppress non-error output (only errors + final summary).
+  *Default:* normal verbosity.
+
+* `--version`, `-h, --help`
+
+* ` --debug`
+  Print debug information.
 
 ### Parse IDs appearing in each file
 
-* The tool scans each line and extracts IDs that match the configured patterns for that file’s layer.
-* **Quoting rule:** if an ID appears inside quotes (`"..."` or `'...'`), it is considered a **reference** (not a definition). (This matters when computing “defined IDs” vs “referenced IDs.”)
+#### Definitions vs references (single rule)
+
+An ID occurrence is a **definition** iff it:
+
+* matches the file’s assigned layer `ids` patterns, and
+* is **not** inside quotes, and
+* is **not** inside a grouping.
+
+Otherwise it is a **reference**.
+
+#### Tokenization / candidate extraction
+
+* The tool scans text and extracts **candidate tokens** using simple boundaries:
+  * tokens are maximal substrings delimited by whitespace or grouping/`separator` delimiters
+  * punctuation outside the allowed ID charset breaks tokens
+* Error messages preserve the original token (no normalization).
+
+#### Candidate acceptance
+
+A candidate token is accepted as an ID only if:
+
+* it satisfies the global start/end rules, and
+* it matches a required layer regex for its role:
+  * In a layer-i file: IDs matching layer-i patterns are candidates for **definitions**.
+  * IDs matching layer-(i−1) patterns are candidates for **references** (from groupings + quoted IDs).
+
+* **Quoting rule:** if an ID appears inside quotes (`"..."` or `'...'`), it is considered a **reference** (not a definition).
 
 ### Parse groupings everywhere
 
 * Groupings are delimited by configurable `start_grouping` and `end_grouping` (default `[` and `]`).
 * A file may contain **multiple groupings**, and groupings **do not have to be at the end of an item**.
-* All IDs found inside groupings count as **references**.
-* The tool **deduplicates references** before running coverage checks and before emitting “unknown reference” errors (so repeated use doesn’t create noise).
+* Groupings are **non-nesting** and **may span lines**; the first matching `end_grouping` closes the grouping.
+* All IDs found inside groupings count as **references** (never definitions).
+* Inside a grouping:
+  * split by `separator` (e.g. commas),
+  * trim whitespace,
+  * each token is either:
+    * an upstream ID (e.g. `INV-4`), or
+    * a passthrough form (e.g. `PT:INV-7`) which counts as referencing `INV-7`.
 
 ### Build adjacency mapping sets
 
 For each adjacent layer pair `(i-1 -> i)`:
 
 * `DefinedUpstream = all IDs defined in layer i-1`
-* `ReferencedInDownstream = all upstream IDs referenced by layer i` (from groupings + quoted IDs)
+* `ReferencedInDownstream = set of all upstream IDs referenced by layer i` (from groupings + quoted IDs, after passthrough normalization)
+
+Notes:
+
+* Passthrough normalization: `PT:<UPSTREAM_ID>` contributes `<UPSTREAM_ID>` to `ReferencedInDownstream`.
+* References are **deduplicated** before validation and before emitting reference-based errors (so repeated use doesn’t create noise).
 
 ### Validate traceability
 
-* **Coverage / no orphan upstream IDs:** every ID in `DefinedUpstream` must appear at least once in `ReferencedInDownstream` (either directly or as passthrough).
-* **No unknown upstream references:** any referenced upstream ID must exist in `DefinedUpstream`.
+* **Coverage:** `DefinedUpstream ⊆ ReferencedInDownstream` (passthrough counts).
+* **Soundness:** `ReferencedInDownstream ⊆ DefinedUpstream`.
 * **Parse correctness:** malformed groupings or malformed IDs produce explicit parse errors.
 
 ### Emit explicit, bounded errors
@@ -63,7 +132,7 @@ For each adjacent layer pair `(i-1 -> i)`:
 ### Error Limiting
 
 * The tool does **not** require “each item must end with a grouping.”
-* Instead: **the tool parses groupings wherever they appear**. If traceability is missing, **errors** will instruct what’s required.
+* Instead: the tool parses groupings wherever they appear. If traceability is missing, errors instruct what’s required.
 
 ---
 
@@ -103,31 +172,31 @@ grouping:
 # Ordered layers (position = dependency; each layer validated against previous)
 layers:
   - name: intents
-    glob: "l0-*.md"
+    globs: ["l0-*.md"]
     ids: ["INTENT-[0-9]+(\\.[0-9]+)*"]
 
   - name: capabilities
-    glob: "l1-*.md"
+    globs: ["l1-*.md"]
     ids: ["CAP-[0-9]+(\\.[0-9]+)*"]
 
   - name: invariants
-    glob: "l2-*.md"
+    globs: ["l2-*.md"]
     ids: ["INV-[0-9]+(\\.[0-9]+)*"]
 
   - name: contracts
-    glob: "l3-*.md"
+    globs: ["l3-*.md"]
     ids: ["(API|MSG|UI)-[0-9]+(\\.[0-9]+)*"]
 
   - name: rules
-    glob: "l4-*.md"
+    globs: ["l4-*.md"]
     ids: ["RULE-[0-9]+(\\.[0-9]+)*"]
 
   - name: tests
-    glob: "l5-*.md"
+    globs: ["l5-*.md"]
     ids: ["TEST-[0-9]+(\\.[0-9]+)*"]
 
   - name: code
-    glob: "src/**"
+    globs: ["src/**"]
     ids: ["CODE-[0-9]+(\\.[0-9]+)*"]
 
 exclude:
@@ -136,51 +205,9 @@ exclude:
   - "**/build/**"
   - "**/.git/**"
   - "**/.venv/**"
-```
+````
 
 That’s the whole config surface for V1.
-
----
-
-## How IDs are recognized in text/code
-
-* The tool scans each line and extracts candidate tokens that look like IDs.
-* It does **not** mutate the token for error reporting (so hyphens/dots remain visible).
-* A candidate token is accepted as an ID only if:
-
-  * it satisfies the global start/end rules, and
-  * it matches at least one mask for the file’s assigned layer (for definitions), or
-  * it matches patterns for the upstream layer (when parsing references inside groupings for adjacency checks).
-
----
-
-## How groupings work (important details)
-
-* A grouping is any substring between `start_grouping` and `end_grouping` (e.g. `[...]`).
-* Inside the grouping:
-
-  * split by `separator` (e.g. commas),
-  * trim whitespace,
-  * each token is either:
-
-    * an upstream ID (e.g. `INV-4`), or
-    * a passthrough form (e.g. `PT:INV-7`) which still counts as referencing `INV-7`.
-* Multiple groupings per file are allowed.
-* References are **deduplicated** before validation:
-
-  * repeated mention of `INV-4` does not produce repeated errors.
-
----
-
-## What “passthrough” means in this tool
-
-If a layer has no meaningful concept for an upstream ID but you still need to acknowledge it:
-
-* include it as `PT:<UPSTREAM_ID>` in any grouping at a layer.
-
-This satisfies the “no missing connection” requirement at that layer, while signaling “this must surface later.”
-
-(Enforcing “must surface by a deeper layer” can be added later; V1 can simply track and report passthrough usage as informational output if you want.)
 
 ---
 
@@ -192,22 +219,51 @@ Typical codes:
 
 * **E010 MalformedGrouping**
 
-  * grouping start/end mismatch or empty token list
+  * unclosed/extra delimiter, or zero non-empty tokens after split+trim
+
 * **E020 BadIdToken**
 
-  * token violates global start/end rule or fails regex pattern where required
+  * token violates global start/end rule or fails required layer regex
+
 * **E030 UnknownUpstreamReference**
 
-  * a layer references an upstream ID not defined in the previous layer
+  * referenced upstream ID ∉ `DefinedUpstream` (after passthrough normalization + dedup)
+
 * **E101 UnmappedUpstreamId**
 
-  * an ID defined in the previous layer is never referenced anywhere in the current layer (after dedup)
+  * upstream ID ∉ `ReferencedInDownstream` (after passthrough normalization + dedup)
+  * emitted at most once per missing upstream ID for the `(i-1 -> i)` layer pair
 
 Example bounded footer:
 
 * `… 25 errors shown (TRACE_MAX_ERRORS=25). More errors exist; fix these and re-run.`
 
 ---
+
+### Error output format (crisp, diff-friendly)
+
+Each error is a single, self-contained block designed to be easy to locate and patch. It includes:
+
+* **Code + short message**
+* **File path + 1-based line number** (and optionally column if available)
+* A **3-line context snippet** (previous / offending / next), bounded by triple backticks, with the **offending line isolated** so an AI can reliably generate a targeted diff.
+
+Error output format template:
+
+```error
+<ERROR_CODE> <short_message> — <file_path>:<line>
+<triple-ticks>
+<line-1 context>
+<offending line>
+<line+1 context>
+<triple-ticks>
+```
+
+Notes:
+
+* Line numbers are **1-based**.
+* If the offending line is the first/last line of file, missing context lines are omitted (but the snippet remains bounded by triple backticks).
+* The snippet is **verbatim** from the file (no normalization), so diffs apply cleanly.
 
 ## What success looks like
 
@@ -217,7 +273,3 @@ When the tool passes:
 * No layer references non-existent upstream IDs.
 * Agents get small, actionable error batches.
 * Drift is caught immediately, so changes can propagate from L0 down to code in a controlled way.
-
-If you want, the next natural add-on (still not “overdone”) is a `--emit-report` mode that writes a deduped JSON summary:
-
-* per layer: defined IDs, referenced IDs, unmapped IDs, passthrough IDs, unknown references.

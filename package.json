@@ -1,0 +1,28 @@
+{
+  "name": "dep-boss",
+  "version": "0.1.0",
+  "description": "",
+  "main": "dist/cli.js",
+  "type": "commonjs",
+  "bin": {
+    "trace-validate": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/cli.js",
+    "dev": "node dist/cli.js --help"
+  },
+  "keywords": [],
+  "author": "Arturo Hernandez",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^25.3.0",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "yaml": "^2.8.2"
+  }
+}
