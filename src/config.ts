@@ -133,7 +133,12 @@ function resolveConfigPath(rootPath: string, configFile?: string): string {
   return path.resolve(process.cwd(), DEFAULT_CONFIG_NAME);
 }
 
-export function loadConfig(rootPath: string, configFile?: string): TraceValidatorConfig {
+export type LoadedConfig = {
+  path: string;
+  config: TraceValidatorConfig;
+};
+
+export function loadConfig(rootPath: string, configFile?: string): LoadedConfig {
   const configPath = resolveConfigPath(rootPath, configFile);
   if (!fs.existsSync(configPath)) {
     throw new Error(`Config file not found: ${configPath}`);
@@ -141,5 +146,8 @@ export function loadConfig(rootPath: string, configFile?: string): TraceValidato
 
   const rawText = fs.readFileSync(configPath, "utf-8");
   const parsed = parseYaml(rawText);
-  return validateConfig(parsed);
+  return {
+    path: configPath,
+    config: validateConfig(parsed)
+  };
 }

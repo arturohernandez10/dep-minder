@@ -22,12 +22,20 @@ function normalizeRelativePath(relativePath: string): string {
   return relativePath.replace(/\\/g, "/");
 }
 
+function normalizeExcludePatterns(patterns: string[] | undefined): string[] | undefined {
+  if (!patterns || patterns.length === 0) {
+    return undefined;
+  }
+  return patterns.map((pattern) => pattern.replace(/\\/g, "/"));
+}
+
 export async function collectLayerFiles(
   rootPath: string,
   config: TraceValidatorConfig
 ): Promise<LayerFileCollection> {
   const assigned = new Set<string>();
   const layers = [];
+  const ignore = normalizeExcludePatterns(config.exclude);
 
   for (const layer of config.layers) {
     const layerFiles: LayerFile[] = [];
@@ -39,7 +47,7 @@ export async function collectLayerFiles(
         onlyFiles: true,
         unique: true,
         dot: true,
-        ignore: config.exclude ?? []
+        ignore
       });
 
       for (const match of matches) {

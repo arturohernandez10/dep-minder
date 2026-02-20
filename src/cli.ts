@@ -172,14 +172,13 @@ async function main(): Promise<void> {
     }
 
     const resolvedPath = path.resolve(process.cwd(), options.path);
-    const config = loadConfig(resolvedPath, options.configFile);
+    const loaded = loadConfig(resolvedPath, options.configFile);
+    const config = loaded.config;
 
     if (!options.quiet) {
       console.log("trace-validate: project scaffolding ready.");
       console.log(`Path: ${resolvedPath}`);
-      if (options.configFile) {
-        console.log(`Config: ${options.configFile}`);
-      }
+      console.log(`Config: ${loaded.path}`);
     }
 
     const collection = await collectLayerFiles(resolvedPath, config);
@@ -197,6 +196,13 @@ async function main(): Promise<void> {
 
     if (options.format !== "text") {
       throw new Error("Only text output is supported in this milestone");
+    }
+
+    if (
+      options.layer &&
+      !collection.layers.some((layer) => layer.name === options.layer)
+    ) {
+      throw new Error(`Unknown layer: ${options.layer}`);
     }
 
     const issues = validateTraceability(resolvedPath, config, collection, {
@@ -219,7 +225,7 @@ async function main(): Promise<void> {
 
     if (hasErrors) {
       console.error(`trace-validate: ${counts.errors} error(s) found.`);
-    } else if (!options.quiet || issues.length === 0) {
+    } else if (!options.quiet) {
       console.log("trace-validate: no errors found.");
     }
 
