@@ -4,9 +4,10 @@ import path from "node:path";
 import { loadConfig } from "./config";
 import { collectLayerFiles } from "./collection";
 import {
-  countIssues,
+  buildIssueSummary,
   formatIssueText,
   formatLimitFooter,
+  formatSummaryText,
   limitIssues,
   resolveMaxErrors
 } from "./reporting";
@@ -194,10 +195,6 @@ async function main(): Promise<void> {
       }
     }
 
-    if (options.format !== "text") {
-      throw new Error("Only text output is supported in this milestone");
-    }
-
     if (
       options.layer &&
       !collection.layers.some((layer) => layer.name === options.layer)
@@ -212,6 +209,24 @@ async function main(): Promise<void> {
     });
     const maxErrors = resolveMaxErrors(config, options.maxErrors);
     const limited = limitIssues(issues, maxErrors);
+    const summary = buildIssueSummary(issues, options.strict);
+
+    if (options.format === "json") {
+      const report = {
+        format: "trace-validate/v1",
+        summary,
+        limit: {
+          maxErrors,
+          envName: config.errors.max_errors_env,
+          truncated: limited.truncated,
+          displayed: limited.issues.length
+        },
+        issues: limited.issues
+      };
+      console.log(JSON.stringify(report, null, 2));
+      process.exitCode = summary.exitCode;
+      return;
+    }
 
     for (const issue of limited.issues) {
       console.error(formatIssueText(issue));
@@ -221,19 +236,14 @@ async function main(): Promise<void> {
       console.error(formatLimitFooter(maxErrors, config.errors.max_errors_env));
     }
 
-    const counts = countIssues(issues);
-    const hasErrors = counts.errors > 0;
-    const hasWarnings = counts.warnings > 0;
-
-    if (hasErrors) {
-      console.error(`trace-validate: ${counts.errors} error(s) found.`);
+    const summaryText = formatSummaryText(summary);
+    if (summary.errors > 0 || summary.warnings > 0) {
+      console.error(summaryText);
     } else if (!options.quiet) {
-      console.log("trace-validate: no errors found.");
+      console.log(summaryText);
     }
 
-    if (hasErrors || (options.strict && hasWarnings)) {
-      process.exitCode = 1;
-    }
+    process.exitCode = summary.exitCode;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`Error: ${message}`);

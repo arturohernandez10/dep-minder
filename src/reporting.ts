@@ -16,6 +16,14 @@ export type IssueLimitResult = {
   truncated: boolean;
 };
 
+export type IssueSummary = {
+  errors: number;
+  warnings: number;
+  total: number;
+  strict: boolean;
+  exitCode: number;
+};
+
 export function resolveMaxErrors(
   config: TraceValidatorConfig,
   cliMaxErrors?: number
@@ -64,4 +72,34 @@ export function countIssues(issues: Issue[]): { errors: number; warnings: number
     }
   }
   return { errors, warnings };
+}
+
+export function resolveExitCode(
+  counts: { errors: number; warnings: number },
+  strict: boolean
+): number {
+  if (counts.errors > 0) {
+    return 1;
+  }
+  if (strict && counts.warnings > 0) {
+    return 1;
+  }
+  return 0;
+}
+
+export function buildIssueSummary(issues: Issue[], strict: boolean): IssueSummary {
+  const counts = countIssues(issues);
+  return {
+    ...counts,
+    total: issues.length,
+    strict,
+    exitCode: resolveExitCode(counts, strict)
+  };
+}
+
+export function formatSummaryText(summary: IssueSummary): string {
+  if (summary.errors === 0 && summary.warnings === 0) {
+    return "trace-validate: no errors found.";
+  }
+  return `trace-validate: ${summary.errors} error(s), ${summary.warnings} warning(s).`;
 }
