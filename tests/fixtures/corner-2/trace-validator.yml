@@ -1,0 +1,29 @@
+version: 1
+
+errors:
+  max_errors_env: "TRACE_MAX_ERRORS"
+  default_max_errors: 25
+
+grouping:
+  start_grouping: "["
+  end_grouping: "]"
+  separator: ","
+  passthrough_prefix: "PT:"
+
+layers:
+  - name: intents
+    globs: ["l0-*.md"]
+    ids: ["INTENT-[0-9]+(\\.[0-9]+)*"]
+
+  - name: capabilities
+    globs: ["l1-*.md"]
+    ids: ["CAP-[0-9]+(\\.[0-9]+)*"]
+
+  - name: invariants
+    globs: ["l2-*.md"]
+    ids: ["INV-[0-9]+(\\.[0-9]+)*"]
+
+exclude:
+  - "**/node_modules/**"
+  - "**/dist/**"
+  - "**/.git/**"
