@@ -119,6 +119,7 @@ function splitGroupingTokens(
 
 function handleToken(
   raw: string,
+  normalized: string,
   line: number,
   context: TokenContext,
   options: ParserOptions,
@@ -129,22 +130,17 @@ function handleToken(
     return;
   }
 
-  const globalValid = GLOBAL_ID_REGEX.test(raw);
-  const requiredPatterns =
-    context === "definition" ? options.layerIdPatterns : options.upstreamIdPatterns;
-  const matchesRequired = requiredPatterns.length > 0 && matchesAny(requiredPatterns, raw);
+  const matchesLayer =
+    options.layerIdPatterns.length > 0 && matchesAny(options.layerIdPatterns, normalized);
+  const matchesUpstream =
+    options.upstreamIdPatterns.length > 0 && matchesAny(options.upstreamIdPatterns, normalized);
 
-  if (matchesRequired && globalValid) {
-    const entry = { id: raw, raw, line };
-    if (context === "definition") {
-      output.definitions.push(entry);
-    } else {
-      output.references.push(entry);
-    }
+  if (!matchesLayer && !matchesUpstream) {
     return;
   }
 
-  if (matchesRequired || globalValid) {
+  const globalValid = GLOBAL_ID_REGEX.test(normalized);
+  if (!globalValid) {
     output.issues.push(
       createIssue(
         "E020",
@@ -154,7 +150,16 @@ function handleToken(
         lines
       )
     );
+    return;
   }
+
+  const eligibleDefinition = context === "definition";
+  if (matchesLayer && eligibleDefinition) {
+    output.definitions.push({ id: normalized, raw, line });
+    return;
+  }
+
+  output.references.push({ id: normalized, raw, line });
 }
 
 export function parseLayerFile(options: ParserOptions): ParsedFile {
@@ -180,7 +185,7 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
     if (tokenBuffer.length === 0) {
       return;
     }
-    handleToken(tokenBuffer, tokenLine, context, options, lines, output);
+    handleToken(tokenBuffer, tokenBuffer, tokenLine, context, options, lines, output);
     tokenBuffer = "";
   };
 
@@ -213,14 +218,15 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
           );
         } else {
           for (const token of tokens) {
-            let raw = token.raw;
-            if (passthroughPrefix && raw.startsWith(passthroughPrefix)) {
-              raw = raw.slice(passthroughPrefix.length);
-              if (raw.trim().length === 0) {
+            const original = token.raw;
+            let normalized = original;
+            if (passthroughPrefix && original.startsWith(passthroughPrefix)) {
+              normalized = original.slice(passthroughPrefix.length);
+              if (normalized.trim().length === 0) {
                 output.issues.push(
                   createIssue(
                     "E020",
-                    `Bad ID token: ${token.raw}`,
+                    `Bad ID token: ${original}`,
                     options.filePath,
                     token.line,
                     lines
@@ -229,7 +235,7 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
                 continue;
               }
             }
-            handleToken(raw, token.line, "reference", options, lines, output);
+            handleToken(original, normalized, token.line, "reference", options, lines, output);
           }
         }
 

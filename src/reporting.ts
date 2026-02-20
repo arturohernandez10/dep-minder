@@ -46,8 +46,7 @@ export function limitIssues(issues: Issue[], maxErrors: number): IssueLimitResul
 
 export function formatIssueText(issue: Issue): string {
   const header = `${issue.code} ${issue.message} — ${issue.filePath}:${issue.line}`;
-  const snippet = issue.context.join("\n");
-  return ["```error", header, "```", snippet, "```"].join("\n");
+  return ["```error", header, ...issue.context, "```"].join("\n");
 }
 
 export function formatLimitFooter(maxErrors: number, envName: string): string {

@@ -206,7 +206,9 @@ async function main(): Promise<void> {
     }
 
     const issues = validateTraceability(resolvedPath, config, collection, {
-      layer: options.layer
+      layer: options.layer,
+      debug: options.debug,
+      quiet: options.quiet
     });
     const maxErrors = resolveMaxErrors(config, options.maxErrors);
     const limited = limitIssues(issues, maxErrors);
