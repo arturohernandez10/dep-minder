@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import type { LayerFileCollection } from "./collection";
 import type { TraceValidatorConfig } from "./config";
 import type { Issue } from "./reporting";
@@ -30,6 +31,25 @@ function buildContextSnippet(lines: string[], lineIndex: number): string[] {
   const start = Math.max(0, lineIndex - 1);
   const end = Math.min(lines.length - 1, lineIndex + 1);
   return lines.slice(start, end + 1);
+}
+
+function normalizeRelativePath(value: string): string {
+  return value.replace(/\\/g, "/");
+}
+
+function resolveIssuePath(
+  rootPath: string,
+  config: TraceValidatorConfig,
+  relativePath: string
+): string {
+  const absolutePath = path.resolve(rootPath, relativePath);
+  if (!config.error_root) {
+    return absolutePath;
+  }
+  const errorRoot = path.isAbsolute(config.error_root)
+    ? config.error_root
+    : path.resolve(rootPath, config.error_root);
+  return normalizeRelativePath(path.relative(errorRoot, absolutePath));
 }
 
 function createIssue(
@@ -75,7 +95,7 @@ function addToMapIfMissing(map: Map<string, TokenWithSource>, token: TokenWithSo
 }
 
 export function validateTraceability(
-  _rootPath: string,
+  rootPath: string,
   config: TraceValidatorConfig,
   collection: LayerFileCollection,
   options: ValidationOptions
@@ -108,9 +128,10 @@ export function validateTraceability(
       const text = fs.readFileSync(file.absolutePath, "utf-8");
       const lines = text.split(/\r?\n/);
       fileLines.set(file.relativePath, lines);
+      const issuePath = resolveIssuePath(rootPath, config, file.relativePath);
 
       const parsed = parseLayerFile({
-        filePath: file.relativePath,
+        filePath: issuePath,
         text,
         layerIdPatterns: layerPatterns,
         upstreamIdPatterns: upstreamPatterns,
@@ -186,11 +207,12 @@ export function validateTraceability(
       .sort(([idA], [idB]) => idA.localeCompare(idB));
     for (const [id, token] of unknownReferences) {
       const lines = fileLines.get(token.filePath) ?? [];
+      const issuePath = resolveIssuePath(rootPath, config, token.filePath);
       issues.push(
         createIssue(
           "E030",
           `UnknownUpstreamReference: ${id}`,
-          token.filePath,
+          issuePath,
           token.line,
           lines
         )
@@ -202,11 +224,12 @@ export function validateTraceability(
       .sort(([idA], [idB]) => idA.localeCompare(idB));
     for (const [id, token] of missingUpstream) {
       const lines = fileLines.get(token.filePath) ?? [];
+      const issuePath = resolveIssuePath(rootPath, config, token.filePath);
       issues.push(
         createIssue(
           "E101",
           `UnmappedUpstreamId: ${id}`,
-          token.filePath,
+          issuePath,
           token.line,
           lines
         )

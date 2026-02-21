@@ -1,17 +1,19 @@
 {
-  "name": "dep-boss",
+  "name": "dep-minder",
   "version": "0.1.0",
   "description": "",
   "main": "dist/cli.js",
   "type": "commonjs",
   "bin": {
-    "trace-validate": "dist/cli.js"
+    "dep-minder": "dist/cli.js"
   },
   "files": [
     "dist"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "cases": "npm run build && tsc -p tsconfig.tests.json && node dist/tests/run-fixtures.js",
+    "cases-debug": "npm run build && tsc -p tsconfig.tests.json && node dist/tests/run-fixtures.js --debug",
     "test": "npm run build && tsc -p tsconfig.tests.json && node --test dist/tests",
     "start": "node dist/cli.js",
     "dev": "node dist/cli.js --help"

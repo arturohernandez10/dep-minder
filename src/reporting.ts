@@ -54,7 +54,7 @@ export function limitIssues(issues: Issue[], maxErrors: number): IssueLimitResul
 
 export function formatIssueText(issue: Issue): string {
   const header = `${issue.code} ${issue.message} — ${issue.filePath}:${issue.line}`;
-  return ["```error", header, ...issue.context, "```"].join("\n");
+  return [header, "```error", ...issue.context, "```"].join("\n");
 }
 
 export function formatLimitFooter(maxErrors: number, envName: string): string {
@@ -99,7 +99,7 @@ export function buildIssueSummary(issues: Issue[], strict: boolean): IssueSummar
 
 export function formatSummaryText(summary: IssueSummary): string {
   if (summary.errors === 0 && summary.warnings === 0) {
-    return "trace-validate: no errors found.";
+    return "dep-minder: no errors found.";
   }
-  return `trace-validate: ${summary.errors} error(s), ${summary.warnings} warning(s).`;
+  return `dep-minder: ${summary.errors} error(s), ${summary.warnings} warning(s).`;
 }

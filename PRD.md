@@ -32,7 +32,7 @@ the tool will:
 
 ## command line interface
 
-* `trace-validate [PATH]`
+* `dep-minder [PATH]`
   *Default:* `PATH=.` (repo root)
 
 * `-c, --config <file>`

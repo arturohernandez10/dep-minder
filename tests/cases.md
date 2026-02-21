@@ -16,6 +16,9 @@
 - **Corner 2: Quoted IDs become references (not definitions)**  
   A layer file includes an ID string in quotes that matches its own layer pattern. Expect: it is treated as a reference, not a definition.
 
+- **Corner 3: Both layers as directories with multiple files**  
+  `l0` and `l1` are directories; one layer has two files while the other has one. Expect: all files are aggregated per layer and coverage checks span all files.
+
 ## Error
 
 - **Error 1: E010 MalformedGrouping (unclosed)**  

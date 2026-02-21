@@ -23,6 +23,7 @@ type CliOptions = {
   layer?: string;
   strict: boolean;
   quiet: boolean;
+  verbose: boolean;
   debug: boolean;
   help: boolean;
   version: boolean;
@@ -32,7 +33,8 @@ const DEFAULTS: CliOptions = {
   path: ".",
   format: "text",
   strict: false,
-  quiet: false,
+  quiet: true,
+  verbose: false,
   debug: false,
   help: false,
   version: false
@@ -51,7 +53,7 @@ function getPackageVersion(): string {
 
 function showHelp(): void {
   const text = `
-trace-validate [PATH]
+dep-minder [PATH]
 Default PATH: .
 
 Options:
@@ -60,7 +62,8 @@ Options:
   --format <text|json>    Output format (default: text)
   --layer <name>          Validate only one layer pair
   --strict                Treat all emitted issues as errors
-  -q, --quiet             Suppress non-error output
+  -q, --quiet             Suppress non-error output (default)
+  --verbose               Show non-error output
   --debug                 Print debug information
   --version               Print version
   -h, --help              Show help
@@ -91,6 +94,13 @@ function parseArgs(argv: string[]): CliOptions {
 
     if (arg === "-q" || arg === "--quiet") {
       options.quiet = true;
+      options.verbose = false;
+      continue;
+    }
+
+    if (arg === "--verbose") {
+      options.quiet = false;
+      options.verbose = true;
       continue;
     }
 
@@ -177,7 +187,7 @@ async function main(): Promise<void> {
     const config = loaded.config;
 
     if (!options.quiet) {
-      console.log("trace-validate: project scaffolding ready.");
+      console.log("dep-minder: project scaffolding ready.");
       console.log(`Path: ${resolvedPath}`);
       console.log(`Config: ${loaded.path}`);
     }
@@ -213,7 +223,7 @@ async function main(): Promise<void> {
 
     if (options.format === "json") {
       const report = {
-        format: "trace-validate/v1",
+        format: "dep-minder/v1",
         summary,
         limit: {
           maxErrors,

@@ -17,7 +17,7 @@ function normalizeOutput(text: string): string {
 
 function expectErrorBlock(stderr: string, block: ErrorBlock): void {
   const header = `${block.code} ${block.message} — ${block.file}:${block.line}`;
-  const expected = ["```error", header, ...block.context, "```"].join("\n");
+  const expected = [header, "```error", ...block.context, "```"].join("\n");
   assert.ok(
     normalizeOutput(stderr).includes(expected),
     `Expected error block missing:\n${expected}`
@@ -29,7 +29,8 @@ test("corner-1: groupings mid-line and multiple per file", () => {
   const result = runCli([fixtureRoot], fixtureRoot);
 
   assert.equal(result.exitCode, 0);
-  assert.match(result.stdout, /no errors found/i);
+  assert.equal(result.stdout.trim(), "");
+  assert.equal(result.stderr.trim(), "");
 });
 
 test("corner-2: quoted IDs become references", () => {
@@ -48,6 +49,15 @@ test("corner-2: quoted IDs become references", () => {
       "Additional invariant note."
     ]
   });
+});
+
+test("corner-3: directory layers with multiple files", () => {
+  const fixtureRoot = path.resolve(process.cwd(), "tests", "fixtures", "corner-3");
+  const result = runCli([fixtureRoot], fixtureRoot);
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stdout.trim(), "");
+  assert.equal(result.stderr.trim(), "");
 });
 
 test("error-1: unclosed grouping emits E010", () => {

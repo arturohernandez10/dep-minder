@@ -8,5 +8,6 @@ test("core-1: full pass with coverage + soundness", () => {
   const result = runCli([fixtureRoot], fixtureRoot);
 
   assert.equal(result.exitCode, 0);
-  assert.match(result.stdout, /no errors found/i);
+  assert.equal(result.stdout.trim(), "");
+  assert.equal(result.stderr.trim(), "");
 });

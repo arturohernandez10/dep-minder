@@ -4,6 +4,7 @@ import { parse as parseYaml } from "yaml";
 
 export type TraceValidatorConfig = {
   version: number;
+  error_root?: string;
   errors: {
     max_errors_env: string;
     default_max_errors: number;
@@ -103,8 +104,13 @@ function validateConfig(raw: unknown): TraceValidatorConfig {
     assert(isStringArray(config.exclude), "exclude must be a string array when provided");
   }
 
+  if (config.error_root !== undefined) {
+    assert(isNonEmptyString(config.error_root), "error_root must be a non-empty string");
+  }
+
   return {
     version: 1,
+    error_root: config.error_root as string | undefined,
     errors: {
       max_errors_env: errorsObj.max_errors_env,
       default_max_errors: errorsObj.default_max_errors as number
@@ -122,7 +128,16 @@ function validateConfig(raw: unknown): TraceValidatorConfig {
 
 function resolveConfigPath(rootPath: string, configFile?: string): string {
   if (configFile) {
-    return path.isAbsolute(configFile) ? configFile : path.resolve(rootPath, configFile);
+    if (path.isAbsolute(configFile)) {
+      return configFile;
+    }
+
+    const cwdCandidate = path.resolve(process.cwd(), configFile);
+    if (fs.existsSync(cwdCandidate)) {
+      return cwdCandidate;
+    }
+
+    return path.resolve(rootPath, configFile);
   }
 
   const candidateInRoot = path.resolve(rootPath, DEFAULT_CONFIG_NAME);
