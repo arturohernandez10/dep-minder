@@ -25,23 +25,6 @@ The core flow is:
 | `src/validate.ts` | Validates adjacency between layers, produces unknown/missing ID issues, and handles debug output. |
 | `src/reporting.ts` | Formats issues, limits error output, builds summary and exit code logic, reads env max errors. |
 
-## Implementation Secrets (Encapsulation)
-
-Each module hides internal details so other files depend only on stable inputs/outputs.
-
-- `src/cli.ts` isolates argument parsing and user-facing output. Other files
-  do not need to know about CLI flags, stdout/stderr routing, or exit codes.
-- `src/config.ts` isolates YAML parsing and schema validation. Callers receive
-  a typed `TraceValidatorConfig` and do not depend on raw YAML shapes.
-- `src/collection.ts` isolates filesystem globbing, dedupe rules, and path
-  normalization. Callers work with `LayerFileCollection` only.
-- `src/parser.ts` isolates tokenization, grouping parsing, and ID validation.
-  Callers receive parsed definitions/references and parse issues.
-- `src/validate.ts` isolates adjacency rules and issue generation for missing/
-  unknown upstream IDs. Callers only pass config + collection.
-- `src/reporting.ts` isolates formatting, error limiting, and summary/exit logic.
-  Callers do not depend on the formatting or env variable details.
-
 ## Sensitive Inputs
 
 `dep-minder` does not store secrets in source files, but it does read external
