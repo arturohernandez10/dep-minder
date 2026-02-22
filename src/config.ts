@@ -18,6 +18,7 @@ export type TraceValidatorConfig = {
   resolution?: {
     enabled: boolean;
     aliases?: Record<string, string>;
+    separator?: string;
   };
   layers: Array<{
     name: string;
@@ -123,6 +124,7 @@ function validateConfig(raw: unknown): TraceValidatorConfig {
     assert(typeof resolutionObj.enabled === "boolean", "resolution.enabled must be a boolean");
 
     let aliases: Record<string, string> | undefined;
+    let separator: string | undefined;
     if (resolutionObj.aliases !== undefined) {
       assert(
         typeof resolutionObj.aliases === "object" &&
@@ -147,9 +149,18 @@ function validateConfig(raw: unknown): TraceValidatorConfig {
       }
     }
 
+    if (resolutionObj.separator !== undefined) {
+      assert(
+        isNonEmptyString(resolutionObj.separator),
+        "resolution.separator must be a non-empty string when provided"
+      );
+      separator = resolutionObj.separator;
+    }
+
     resolutionConfig = {
       enabled: resolutionObj.enabled,
-      aliases
+      aliases,
+      separator: separator ?? ":"
     };
   }
 
@@ -204,6 +215,7 @@ export type ResolutionLookup = {
   enabled: boolean;
   layerNames: Set<string>;
   aliasToName: Record<string, string>;
+  separator: string;
 };
 
 function buildResolutionLookup(config: TraceValidatorConfig): ResolutionLookup | undefined {
@@ -215,7 +227,8 @@ function buildResolutionLookup(config: TraceValidatorConfig): ResolutionLookup |
   return {
     enabled: config.resolution.enabled,
     layerNames,
-    aliasToName: config.resolution.aliases ?? {}
+    aliasToName: config.resolution.aliases ?? {},
+    separator: config.resolution.separator ?? ":"
   };
 }
 

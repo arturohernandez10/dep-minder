@@ -22,6 +22,7 @@ export type ParserOptions = {
     enabled: boolean;
     layerNames: Set<string>;
     aliasToName: Record<string, string>;
+    separator: string;
   };
   grouping: {
     start: string;
@@ -39,18 +40,31 @@ function isAllowedTokenChar(char: string): boolean {
   return /[A-Za-z0-9._-]/.test(char);
 }
 
-function isAllowedTokenCharWithResolution(char: string, allowResolution: boolean): boolean {
-  return isAllowedTokenChar(char) || (allowResolution && char === ":");
+function isAllowedTokenCharWithResolution(
+  char: string,
+  allowResolution: boolean,
+  separator?: string
+): boolean {
+  if (allowResolution && separator && separator.length === 1 && char === separator) {
+    return true;
+  }
+  return isAllowedTokenChar(char);
 }
 
-function findResolutionSplit(value: string): { id: string; level: string } | null {
-  let index = value.indexOf(":");
+function findResolutionSplit(
+  value: string,
+  separator: string
+): { id: string; level: string } | null {
+  if (!separator) {
+    return null;
+  }
+  let index = value.indexOf(separator);
   while (index > 0) {
     const candidate = value.slice(0, index);
     if (GLOBAL_ID_REGEX.test(candidate)) {
-      return { id: candidate, level: value.slice(index + 1) };
+      return { id: candidate, level: value.slice(index + separator.length) };
     }
-    index = value.indexOf(":", index + 1);
+    index = value.indexOf(separator, index + separator.length);
   }
   return null;
 }
@@ -160,7 +174,8 @@ function handleToken(
   options: ParserOptions,
   lines: string[],
   output: ParsedFile,
-  contextFlags: { inQuote: boolean; inGrouping: boolean }
+  contextFlags: { inQuote: boolean; inGrouping: boolean },
+  resolutionLevel?: string
 ): void {
   if (raw.length === 0) {
     return;
@@ -168,37 +183,30 @@ function handleToken(
 
   let normalizedId = normalized;
   let resolution: string | undefined;
-  if (options.resolution?.enabled) {
-    const split = findResolutionSplit(normalized);
-    if (split) {
-      if (contextFlags.inQuote || contextFlags.inGrouping) {
+  const resolutionOptions = options.resolution;
+  if (resolutionOptions?.enabled) {
+    if (contextFlags.inQuote || contextFlags.inGrouping) {
+      const split = findResolutionSplit(normalized, resolutionOptions.separator);
+      if (split) {
+        output.issues.push(
+          createIssue("E111", "ResolutionOnNonDefinition", options.filePath, line, lines)
+        );
+        normalizedId = split.id;
+      }
+    } else if (resolutionLevel !== undefined) {
+      const resolved = resolveResolutionLevel(resolutionLevel, resolutionOptions);
+      if (!resolved) {
         output.issues.push(
           createIssue(
-            "E111",
-            "ResolutionOnNonDefinition",
+            "E110",
+            `UnknownResolutionLevel: ${resolutionLevel}`,
             options.filePath,
             line,
             lines
           )
         );
-        normalizedId = split.id;
       } else {
-        const resolved = resolveResolutionLevel(split.level, options.resolution);
-        if (!resolved) {
-          output.issues.push(
-            createIssue(
-              "E110",
-              `UnknownResolutionLevel: ${split.level}`,
-              options.filePath,
-              line,
-              lines
-            )
-          );
-          normalizedId = split.id;
-        } else {
-          normalizedId = split.id;
-          resolution = resolved;
-        }
+        resolution = resolved;
       }
     }
   }
@@ -254,14 +262,14 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
   let tokenBuffer = "";
   let tokenLine = 1;
 
-  const flushToken = (context: TokenContext) => {
+  const flushToken = (context: TokenContext, resolutionLevel?: string) => {
     if (tokenBuffer.length === 0) {
       return;
     }
     handleToken(tokenBuffer, tokenBuffer, tokenLine, context, options, lines, output, {
       inQuote: inQuote !== null,
       inGrouping: false
-    });
+    }, resolutionLevel);
     tokenBuffer = "";
   };
 
@@ -311,10 +319,19 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
                 continue;
               }
             }
-            handleToken(original, normalized, token.line, "reference", options, lines, output, {
-              inQuote: false,
-              inGrouping: true
-            });
+            handleToken(
+              original,
+              normalized,
+              token.line,
+              "reference",
+              options,
+              lines,
+              output,
+              {
+                inQuote: false,
+                inGrouping: true
+              }
+            );
           }
         }
 
@@ -377,9 +394,28 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
       continue;
     }
 
+    if (!inGrouping && !inQuote && options.resolution?.enabled && tokenBuffer.length > 0) {
+      const separator = options.resolution.separator;
+      if (separator.length > 0 && options.text.startsWith(separator, index)) {
+        let scanIndex = index + separator.length;
+        let resolutionLevel = "";
+        while (scanIndex < options.text.length && isAllowedTokenChar(options.text[scanIndex])) {
+          resolutionLevel += options.text[scanIndex];
+          scanIndex += 1;
+        }
+        flushToken(inQuote ? "reference" : "definition", resolutionLevel);
+        advance(separator.length + resolutionLevel.length);
+        continue;
+      }
+    }
+
     if (
       isWhitespace ||
-      !isAllowedTokenCharWithResolution(options.text[index], options.resolution?.enabled ?? false)
+      !isAllowedTokenCharWithResolution(
+        options.text[index],
+        (options.resolution?.enabled ?? false) && inQuote !== null,
+        options.resolution?.separator
+      )
     ) {
       flushToken(inQuote ? "reference" : "definition");
       advance(1);

@@ -131,3 +131,63 @@ test("error-020: bad ID token emits E020", () => {
     ]
   });
 });
+
+test("error-110: unknown resolution level emits E110", () => {
+  const fixtureRoot = path.resolve(process.cwd(), "tests", "fixtures", "error-110");
+  const result = runCli([fixtureRoot], fixtureRoot);
+
+  assert.equal(result.exitCode, 1);
+  expectErrorBlock(result.stderr, {
+    code: "E110",
+    message: "UnknownResolutionLevel: unknown",
+    file: "l0-intents.md",
+    line: 2,
+    context: ["# Intents", "INTENT-1:unknown Invalid resolution marker.", ""]
+  });
+});
+
+test("error-111: resolution on non-definition emits E111", () => {
+  const fixtureRoot = path.resolve(process.cwd(), "tests", "fixtures", "error-111");
+  const result = runCli([fixtureRoot], fixtureRoot);
+
+  assert.equal(result.exitCode, 1);
+  expectErrorBlock(result.stderr, {
+    code: "E111",
+    message: "ResolutionOnNonDefinition",
+    file: "l1-capabilities.md",
+    line: 3,
+    context: [
+      "CAP-1 Supports sign-in. [INTENT-1]",
+      "\"CAP-2@capabilities\" should not be a definition.",
+      ""
+    ]
+  });
+});
+
+test("error-211: out of order resolution emits E211", () => {
+  const fixtureRoot = path.resolve(process.cwd(), "tests", "fixtures", "error-211");
+  const result = runCli([fixtureRoot], fixtureRoot);
+
+  assert.equal(result.exitCode, 1);
+  expectErrorBlock(result.stderr, {
+    code: "E211",
+    message: "OutOfOrderResolutionLevel: intents",
+    file: "l1-capabilities.md",
+    line: 2,
+    context: ["# Capabilities", "CAP-1@intents Supports sign-in. [INTENT-1]", ""]
+  });
+});
+
+test("error-220: mismatched resolution emits E220", () => {
+  const fixtureRoot = path.resolve(process.cwd(), "tests", "fixtures", "error-220");
+  const result = runCli([fixtureRoot], fixtureRoot);
+
+  assert.equal(result.exitCode, 1);
+  expectErrorBlock(result.stderr, {
+    code: "E220",
+    message: "MismatchedResolution: expected invariants, found capabilities",
+    file: "l0-intents.md",
+    line: 2,
+    context: ["# Intents", "INTENT-1@invariants User can sign in.", ""]
+  });
+});
