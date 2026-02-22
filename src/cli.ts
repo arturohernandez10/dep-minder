@@ -212,11 +212,17 @@ async function main(): Promise<void> {
       throw new Error(`Unknown layer: ${options.layer}`);
     }
 
-    const issues = validateTraceability(resolvedPath, config, collection, {
-      layer: options.layer,
-      debug: options.debug,
-      quiet: options.quiet
-    });
+    const issues = validateTraceability(
+      resolvedPath,
+      config,
+      collection,
+      {
+        layer: options.layer,
+        debug: options.debug,
+        quiet: options.quiet
+      },
+      loaded.resolution
+    );
     const maxErrors = resolveMaxErrors(config, options.maxErrors);
     const limited = limitIssues(issues, maxErrors);
     const summary = buildIssueSummary(issues, options.strict);

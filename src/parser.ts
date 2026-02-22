@@ -4,6 +4,7 @@ export type ParsedToken = {
   id: string;
   raw: string;
   line: number;
+  resolution?: string;
 };
 
 export type ParsedFile = {
@@ -17,6 +18,11 @@ export type ParserOptions = {
   text: string;
   layerIdPatterns: RegExp[];
   upstreamIdPatterns: RegExp[];
+  resolution?: {
+    enabled: boolean;
+    layerNames: Set<string>;
+    aliasToName: Record<string, string>;
+  };
   grouping: {
     start: string;
     end: string;
@@ -31,6 +37,35 @@ const GLOBAL_ID_REGEX = /^[A-Za-z](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 
 function isAllowedTokenChar(char: string): boolean {
   return /[A-Za-z0-9._-]/.test(char);
+}
+
+function isAllowedTokenCharWithResolution(char: string, allowResolution: boolean): boolean {
+  return isAllowedTokenChar(char) || (allowResolution && char === ":");
+}
+
+function findResolutionSplit(value: string): { id: string; level: string } | null {
+  let index = value.indexOf(":");
+  while (index > 0) {
+    const candidate = value.slice(0, index);
+    if (GLOBAL_ID_REGEX.test(candidate)) {
+      return { id: candidate, level: value.slice(index + 1) };
+    }
+    index = value.indexOf(":", index + 1);
+  }
+  return null;
+}
+
+function resolveResolutionLevel(
+  level: string,
+  options: ParserOptions["resolution"]
+): string | undefined {
+  if (!options) {
+    return undefined;
+  }
+  if (options.layerNames.has(level)) {
+    return level;
+  }
+  return options.aliasToName[level];
 }
 
 function buildContextSnippet(lines: string[], lineIndex: number): string[] {
@@ -124,22 +159,60 @@ function handleToken(
   context: TokenContext,
   options: ParserOptions,
   lines: string[],
-  output: ParsedFile
+  output: ParsedFile,
+  contextFlags: { inQuote: boolean; inGrouping: boolean }
 ): void {
   if (raw.length === 0) {
     return;
   }
 
+  let normalizedId = normalized;
+  let resolution: string | undefined;
+  if (options.resolution?.enabled) {
+    const split = findResolutionSplit(normalized);
+    if (split) {
+      if (contextFlags.inQuote || contextFlags.inGrouping) {
+        output.issues.push(
+          createIssue(
+            "E111",
+            "ResolutionOnNonDefinition",
+            options.filePath,
+            line,
+            lines
+          )
+        );
+        normalizedId = split.id;
+      } else {
+        const resolved = resolveResolutionLevel(split.level, options.resolution);
+        if (!resolved) {
+          output.issues.push(
+            createIssue(
+              "E110",
+              `UnknownResolutionLevel: ${split.level}`,
+              options.filePath,
+              line,
+              lines
+            )
+          );
+          normalizedId = split.id;
+        } else {
+          normalizedId = split.id;
+          resolution = resolved;
+        }
+      }
+    }
+  }
+
   const matchesLayer =
-    options.layerIdPatterns.length > 0 && matchesAny(options.layerIdPatterns, normalized);
+    options.layerIdPatterns.length > 0 && matchesAny(options.layerIdPatterns, normalizedId);
   const matchesUpstream =
-    options.upstreamIdPatterns.length > 0 && matchesAny(options.upstreamIdPatterns, normalized);
+    options.upstreamIdPatterns.length > 0 && matchesAny(options.upstreamIdPatterns, normalizedId);
 
   if (!matchesLayer && !matchesUpstream) {
     return;
   }
 
-  const globalValid = GLOBAL_ID_REGEX.test(normalized);
+  const globalValid = GLOBAL_ID_REGEX.test(normalizedId);
   if (!globalValid) {
     output.issues.push(
       createIssue(
@@ -155,11 +228,11 @@ function handleToken(
 
   const eligibleDefinition = context === "definition";
   if (matchesLayer && eligibleDefinition) {
-    output.definitions.push({ id: normalized, raw, line });
+    output.definitions.push({ id: normalizedId, raw, line, resolution });
     return;
   }
 
-  output.references.push({ id: normalized, raw, line });
+  output.references.push({ id: normalizedId, raw, line, resolution });
 }
 
 export function parseLayerFile(options: ParserOptions): ParsedFile {
@@ -185,7 +258,10 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
     if (tokenBuffer.length === 0) {
       return;
     }
-    handleToken(tokenBuffer, tokenBuffer, tokenLine, context, options, lines, output);
+    handleToken(tokenBuffer, tokenBuffer, tokenLine, context, options, lines, output, {
+      inQuote: inQuote !== null,
+      inGrouping: false
+    });
     tokenBuffer = "";
   };
 
@@ -235,7 +311,10 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
                 continue;
               }
             }
-            handleToken(original, normalized, token.line, "reference", options, lines, output);
+            handleToken(original, normalized, token.line, "reference", options, lines, output, {
+              inQuote: false,
+              inGrouping: true
+            });
           }
         }
 
@@ -298,7 +377,10 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
       continue;
     }
 
-    if (isWhitespace || !isAllowedTokenChar(options.text[index])) {
+    if (
+      isWhitespace ||
+      !isAllowedTokenCharWithResolution(options.text[index], options.resolution?.enabled ?? false)
+    ) {
       flushToken(inQuote ? "reference" : "definition");
       advance(1);
       continue;

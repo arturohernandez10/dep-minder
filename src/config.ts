@@ -15,6 +15,10 @@ export type TraceValidatorConfig = {
     separator: string;
     passthrough_prefix?: string;
   };
+  resolution?: {
+    enabled: boolean;
+    aliases?: Record<string, string>;
+  };
   layers: Array<{
     name: string;
     globs: string[];
@@ -99,6 +103,7 @@ function validateConfig(raw: unknown): TraceValidatorConfig {
       ids: layerObj.ids
     };
   });
+  const layerNames = new Set(parsedLayers.map((layer) => layer.name));
 
   if (config.exclude !== undefined) {
     assert(isStringArray(config.exclude), "exclude must be a string array when provided");
@@ -106,6 +111,46 @@ function validateConfig(raw: unknown): TraceValidatorConfig {
 
   if (config.error_root !== undefined) {
     assert(isNonEmptyString(config.error_root), "error_root must be a non-empty string");
+  }
+
+  let resolutionConfig: TraceValidatorConfig["resolution"];
+  if (config.resolution !== undefined) {
+    assert(
+      typeof config.resolution === "object" && config.resolution !== null,
+      "resolution must be an object when provided"
+    );
+    const resolutionObj = config.resolution as Record<string, unknown>;
+    assert(typeof resolutionObj.enabled === "boolean", "resolution.enabled must be a boolean");
+
+    let aliases: Record<string, string> | undefined;
+    if (resolutionObj.aliases !== undefined) {
+      assert(
+        typeof resolutionObj.aliases === "object" &&
+          resolutionObj.aliases !== null &&
+          !Array.isArray(resolutionObj.aliases),
+        "resolution.aliases must be an object when provided"
+      );
+      const aliasesObj = resolutionObj.aliases as Record<string, unknown>;
+      aliases = {};
+      for (const [alias, value] of Object.entries(aliasesObj)) {
+        assert(
+          isNonEmptyString(value),
+          `resolution.aliases.${alias} must be a non-empty string`
+        );
+        if (resolutionObj.enabled) {
+          assert(
+            layerNames.has(value),
+            `resolution.aliases.${alias} must map to a configured layer name`
+          );
+        }
+        aliases[alias] = value;
+      }
+    }
+
+    resolutionConfig = {
+      enabled: resolutionObj.enabled,
+      aliases
+    };
   }
 
   return {
@@ -121,6 +166,7 @@ function validateConfig(raw: unknown): TraceValidatorConfig {
       separator: groupingObj.separator,
       passthrough_prefix: groupingObj.passthrough_prefix as string | undefined
     },
+    resolution: resolutionConfig,
     layers: parsedLayers,
     exclude: config.exclude as string[] | undefined
   };
@@ -151,7 +197,27 @@ function resolveConfigPath(rootPath: string, configFile?: string): string {
 export type LoadedConfig = {
   path: string;
   config: TraceValidatorConfig;
+  resolution?: ResolutionLookup;
 };
+
+export type ResolutionLookup = {
+  enabled: boolean;
+  layerNames: Set<string>;
+  aliasToName: Record<string, string>;
+};
+
+function buildResolutionLookup(config: TraceValidatorConfig): ResolutionLookup | undefined {
+  if (!config.resolution) {
+    return undefined;
+  }
+
+  const layerNames = new Set(config.layers.map((layer) => layer.name));
+  return {
+    enabled: config.resolution.enabled,
+    layerNames,
+    aliasToName: config.resolution.aliases ?? {}
+  };
+}
 
 export function loadConfig(rootPath: string, configFile?: string): LoadedConfig {
   const configPath = resolveConfigPath(rootPath, configFile);
@@ -161,8 +227,10 @@ export function loadConfig(rootPath: string, configFile?: string): LoadedConfig 
 
   const rawText = fs.readFileSync(configPath, "utf-8");
   const parsed = parseYaml(rawText);
+  const config = validateConfig(parsed);
   return {
     path: configPath,
-    config: validateConfig(parsed)
+    config,
+    resolution: buildResolutionLookup(config)
   };
 }

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { LayerFileCollection } from "./collection";
-import type { TraceValidatorConfig } from "./config";
+import type { ResolutionLookup, TraceValidatorConfig } from "./config";
 import type { Issue } from "./reporting";
 import { parseLayerFile } from "./parser";
 
@@ -10,6 +10,7 @@ type TokenWithSource = {
   raw: string;
   line: number;
   filePath: string;
+  resolution?: string;
 };
 
 type ParsedLayer = {
@@ -84,8 +85,11 @@ function resolveLayerIndex(config: TraceValidatorConfig, layer?: string): number
   return index >= 0 ? index : undefined;
 }
 
-function toTokenWithSource(token: { id: string; raw: string; line: number }, filePath: string) {
-  return { id: token.id, raw: token.raw, line: token.line, filePath };
+function toTokenWithSource(
+  token: { id: string; raw: string; line: number; resolution?: string },
+  filePath: string
+) {
+  return { id: token.id, raw: token.raw, line: token.line, filePath, resolution: token.resolution };
 }
 
 function addToMapIfMissing(map: Map<string, TokenWithSource>, token: TokenWithSource): void {
@@ -94,11 +98,27 @@ function addToMapIfMissing(map: Map<string, TokenWithSource>, token: TokenWithSo
   }
 }
 
+function isResolutionPathInScope(
+  allowedLayerIndices: Set<number>,
+  fromIndex: number,
+  toIndex: number
+): boolean {
+  const start = Math.min(fromIndex, toIndex);
+  const end = Math.max(fromIndex, toIndex);
+  for (let index = start; index <= end; index += 1) {
+    if (!allowedLayerIndices.has(index)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function validateTraceability(
   rootPath: string,
   config: TraceValidatorConfig,
   collection: LayerFileCollection,
-  options: ValidationOptions
+  options: ValidationOptions,
+  resolution?: ResolutionLookup
 ): Issue[] {
   const issues: Issue[] = [];
   const layerRegexes = compileLayerRegexes(config);
@@ -115,6 +135,7 @@ export function validateTraceability(
     references: []
   }));
   const fileLines = new Map<string, string[]>();
+  const referencedIdsByLayer = config.layers.map(() => new Set<string>());
 
   for (let index = 0; index < collection.layers.length; index += 1) {
     if (!allowedLayerIndices.has(index)) {
@@ -135,6 +156,7 @@ export function validateTraceability(
         text,
         layerIdPatterns: layerPatterns,
         upstreamIdPatterns: upstreamPatterns,
+        resolution: resolution?.enabled ? resolution : undefined,
         grouping: {
           start: config.grouping.start_grouping,
           end: config.grouping.end_grouping,
@@ -150,6 +172,9 @@ export function validateTraceability(
       parsedLayers[index].references.push(
         ...parsed.references.map((token) => toTokenWithSource(token, file.relativePath))
       );
+      for (const token of parsed.references) {
+        referencedIdsByLayer[index].add(token.id);
+      }
     }
   }
 
@@ -234,6 +259,63 @@ export function validateTraceability(
           lines
         )
       );
+    }
+  }
+
+  if (resolution?.enabled) {
+    for (let layerIndexToCheck = 0; layerIndexToCheck < parsedLayers.length; layerIndexToCheck += 1) {
+      const layer = parsedLayers[layerIndexToCheck];
+      for (const token of layer.definitions) {
+        if (!token.resolution) {
+          continue;
+        }
+        const resolutionIndex = config.layers.findIndex(
+          (entry) => entry.name === token.resolution
+        );
+        if (resolutionIndex <= layerIndexToCheck) {
+          const lines = fileLines.get(token.filePath) ?? [];
+          const issuePath = resolveIssuePath(rootPath, config, token.filePath);
+          issues.push(
+            createIssue(
+              "E211",
+              `OutOfOrderResolutionLevel: ${token.resolution}`,
+              issuePath,
+              token.line,
+              lines
+            )
+          );
+          continue;
+        }
+
+        if (!isResolutionPathInScope(allowedLayerIndices, layerIndexToCheck, resolutionIndex)) {
+          continue;
+        }
+
+        let actualIndex = layerIndexToCheck;
+        while (actualIndex + 1 < referencedIdsByLayer.length) {
+          const nextIndex = actualIndex + 1;
+          if (!referencedIdsByLayer[nextIndex].has(token.id)) {
+            break;
+          }
+          actualIndex = nextIndex;
+        }
+
+        if (actualIndex !== resolutionIndex) {
+          const lines = fileLines.get(token.filePath) ?? [];
+          const issuePath = resolveIssuePath(rootPath, config, token.filePath);
+          const resolvedName = config.layers[resolutionIndex]?.name ?? token.resolution;
+          const actualName = config.layers[actualIndex]?.name ?? "(unknown)";
+          issues.push(
+            createIssue(
+              "E220",
+              `MismatchedResolution: expected ${resolvedName}, found ${actualName}`,
+              issuePath,
+              token.line,
+              lines
+            )
+          );
+        }
+      }
     }
   }
 
