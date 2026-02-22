@@ -114,6 +114,20 @@ test("error-3: unmapped upstream ID emits E101", () => {
   });
 });
 
+test("resolution-1: resolution enabled suppresses E101", () => {
+  const fixtureRoot = path.resolve(
+    process.cwd(),
+    "tests",
+    "fixtures",
+    "resolution-1"
+  );
+  const result = runCli([fixtureRoot], fixtureRoot);
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stdout.trim(), "");
+  assert.equal(result.stderr.trim(), "");
+});
+
 test("error-020: bad ID token emits E020", () => {
   const fixtureRoot = path.resolve(process.cwd(), "tests", "fixtures", "error-020");
   const result = runCli([fixtureRoot], fixtureRoot);

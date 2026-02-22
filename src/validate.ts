@@ -244,21 +244,23 @@ export function validateTraceability(
       );
     }
 
-    const missingUpstream = [...definedUpstream.entries()]
-      .filter(([id]) => !referencedInDownstream.has(id))
-      .sort(([idA], [idB]) => idA.localeCompare(idB));
-    for (const [id, token] of missingUpstream) {
-      const lines = fileLines.get(token.filePath) ?? [];
-      const issuePath = resolveIssuePath(rootPath, config, token.filePath);
-      issues.push(
-        createIssue(
-          "E101",
-          `UnmappedUpstreamId: ${id}`,
-          issuePath,
-          token.line,
-          lines
-        )
-      );
+    if (!resolution?.enabled) {
+      const missingUpstream = [...definedUpstream.entries()]
+        .filter(([id]) => !referencedInDownstream.has(id))
+        .sort(([idA], [idB]) => idA.localeCompare(idB));
+      for (const [id, token] of missingUpstream) {
+        const lines = fileLines.get(token.filePath) ?? [];
+        const issuePath = resolveIssuePath(rootPath, config, token.filePath);
+        issues.push(
+          createIssue(
+            "E101",
+            `UnmappedUpstreamId: ${id}`,
+            issuePath,
+            token.line,
+            lines
+          )
+        );
+      }
     }
   }
 
