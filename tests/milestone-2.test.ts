@@ -33,22 +33,13 @@ test("corner-1: groupings mid-line and multiple per file", () => {
   assert.equal(result.stderr.trim(), "");
 });
 
-test("corner-2: quoted IDs become references", () => {
+test("corner-2: IDs in prose define", () => {
   const fixtureRoot = path.resolve(process.cwd(), "tests", "fixtures", "corner-2");
   const result = runCli([fixtureRoot], fixtureRoot);
 
-  assert.equal(result.exitCode, 1);
-  expectErrorBlock(result.stderr, {
-    code: "E030",
-    message: "UnknownUpstreamReference: CAP-1",
-    file: "l2-invariants.md",
-    line: 2,
-    context: [
-      "# Invariants",
-      "INV-1: Must map capability. [CAP-1]",
-      "Additional invariant note."
-    ]
-  });
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stdout.trim(), "");
+  assert.equal(result.stderr.trim(), "");
 });
 
 test("corner-3: directory layers with multiple files", () => {
@@ -85,13 +76,13 @@ test("error-2: unknown upstream reference emits E030", () => {
   assert.equal(result.exitCode, 1);
   expectErrorBlock(result.stderr, {
     code: "E030",
-    message: "UnknownUpstreamReference: INTENT-999",
+    message: "UnknownUpstreamReference: INTENT-999.0",
     file: "l1-capabilities.md",
     line: 2,
     context: [
       "# Capabilities",
-      "CAP-1: Uses one missing ref. [INTENT-1, INTENT-999]",
-      "CAP-2: Another line for context."
+      "CAP-1.0 Uses one missing ref. [INTENT-1.0, INTENT-999.0]",
+      "CAP-2.0 Another line for context."
     ]
   });
 });
@@ -172,7 +163,7 @@ test("error-111: resolution on non-definition emits E111", () => {
     line: 3,
     context: [
       "CAP-1 Supports sign-in. [INTENT-1]",
-      "\"CAP-2@capabilities\" should not be a definition.",
+      "[CAP-2@capabilities] should not be a definition.",
       ""
     ]
   });
