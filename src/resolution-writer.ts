@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { ResolutionLookup, TraceValidatorConfig } from "./config";
-import type { TraceAnalysis } from "./validate";
+import { traceDownstreamReach, type TraceAnalysis } from "./validate";
 
 export type ResolutionEdit = {
   filePath: string;
@@ -87,17 +87,7 @@ export function computeResolutionEdits(
   for (let layerIndex = 0; layerIndex < analysis.parsedLayers.length; layerIndex += 1) {
     const layer = analysis.parsedLayers[layerIndex];
     for (const token of layer.definitions) {
-      const actualIndex = (() => {
-        let index = layerIndex;
-        while (index + 1 < analysis.referencedIdsByLayer.length) {
-          const nextIndex = index + 1;
-          if (!analysis.referencedIdsByLayer[nextIndex].has(token.id)) {
-            break;
-          }
-          index = nextIndex;
-        }
-        return index;
-      })();
+      const actualIndex = traceDownstreamReach(analysis.referencedIdsByLayer, token.id, layerIndex);
       const actualResolution = config.layers[actualIndex]?.name ?? token.resolution ?? "";
 
       const hasMarker = token.length > token.raw.length;

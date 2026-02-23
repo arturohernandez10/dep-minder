@@ -15,6 +15,12 @@ type TokenWithSource = {
   resolution?: string;
 };
 
+type DefinitionRange = {
+  token: TokenWithSource;
+  startLine: number;
+  endLine: number;
+};
+
 export type ParsedLayer = {
   definitions: TokenWithSource[];
   references: TokenWithSource[];
@@ -70,46 +76,6 @@ function decodeFileContents(filePath: string): string {
     return buffer.toString("utf16le");
   }
   return buffer.toString("utf8");
-}
-
-function formatCodePoints(value: string): string {
-  return value
-    .split("")
-    .map((char) => `${char}(U+${char.codePointAt(0)?.toString(16).toUpperCase().padStart(4, "0")})`)
-    .join(" ");
-}
-
-function collectIntentDiagnostics(lines: string[], limit: number): string[] {
-  const results: string[] = [];
-  for (let i = 0; i < lines.length; i += 1) {
-    if (results.length >= limit) {
-      break;
-    }
-    const line = lines[i];
-    const matches = line.match(/INTENT[^\s]*/g) ?? [];
-    if (matches.length === 0) {
-      continue;
-    }
-    for (const match of matches) {
-      if (results.length >= limit) {
-        break;
-      }
-      results.push(`line ${i + 1}: ${formatCodePoints(match)}`);
-    }
-  }
-  return results;
-}
-
-function collectSampleLineDiagnostics(lines: string[], limit: number): string[] {
-  const results: string[] = [];
-  for (let i = 0; i < lines.length && results.length < limit; i += 1) {
-    const line = lines[i].trim();
-    if (line.length === 0) {
-      continue;
-    }
-    results.push(`line ${i + 1}: ${formatCodePoints(line)}`);
-  }
-  return results;
 }
 
 function resolveIssuePath(
@@ -178,6 +144,71 @@ function addToMapIfMissing(map: Map<string, TokenWithSource>, token: TokenWithSo
   if (!map.has(token.id)) {
     map.set(token.id, token);
   }
+}
+
+function buildDefinitionRangesByFile(
+  definitions: TokenWithSource[]
+): Map<string, DefinitionRange[]> {
+  const definitionsByFile = new Map<string, TokenWithSource[]>();
+  for (const token of definitions) {
+    const existing = definitionsByFile.get(token.filePath);
+    if (existing) {
+      existing.push(token);
+    } else {
+      definitionsByFile.set(token.filePath, [token]);
+    }
+  }
+
+  const rangesByFile = new Map<string, DefinitionRange[]>();
+  for (const [filePath, tokens] of definitionsByFile) {
+    const sorted = [...tokens].sort((a, b) => a.line - b.line);
+    const ranges: DefinitionRange[] = [];
+    for (let i = 0; i < sorted.length; i += 1) {
+      const token = sorted[i];
+      const nextToken = sorted[i + 1];
+      const endLine = nextToken ? Math.max(token.line, nextToken.line - 1) : Number.POSITIVE_INFINITY;
+      ranges.push({
+        token,
+        startLine: token.line,
+        endLine
+      });
+    }
+    rangesByFile.set(filePath, ranges);
+  }
+  return rangesByFile;
+}
+
+function findDefinitionForLine(
+  rangesByFile: Map<string, DefinitionRange[]>,
+  filePath: string,
+  line: number
+): TokenWithSource | undefined {
+  const ranges = rangesByFile.get(filePath);
+  if (!ranges) {
+    return undefined;
+  }
+  for (const range of ranges) {
+    if (line >= range.startLine && line <= range.endLine) {
+      return range.token;
+    }
+  }
+  return undefined;
+}
+
+export function traceDownstreamReach(
+  referencedIdsByLayer: Array<Set<string>>,
+  id: string,
+  startIndex: number
+): number {
+  let index = startIndex;
+  while (index + 1 < referencedIdsByLayer.length) {
+    const nextIndex = index + 1;
+    if (!referencedIdsByLayer[nextIndex].has(id)) {
+      break;
+    }
+    index = nextIndex;
+  }
+  return index;
 }
 
 function isResolutionPathInScope(
@@ -258,22 +289,6 @@ export function validateTraceability(
         referencedIdsByLayer[index].add(token.id);
       }
 
-      if (options.debug && !options.quiet && config.layers[index]?.name === "intents") {
-        const intentDiagnostics = collectIntentDiagnostics(lines, 10);
-        console.log(
-          `Debug intents: LayerPatterns=${layerPatterns.map((pattern) => pattern.source).join(" | ") || "(none)"}`
-        );
-        if (intentDiagnostics.length > 0) {
-          console.log(
-            `Debug intents: RawIntentTokens=${intentDiagnostics.join(" | ")}`
-          );
-        } else {
-          const sampleDiagnostics = collectSampleLineDiagnostics(lines, 3);
-          console.log(
-            `Debug intents: NoIntentTokensFound; SampleLines=${sampleDiagnostics.join(" | ") || "(none)"}`
-          );
-        }
-      }
     }
   }
 
@@ -309,11 +324,36 @@ export function validateTraceability(
       addToMapIfMissing(referencedInDownstream, token);
     }
 
+    const unknownReferences = [...referencedInDownstream.entries()]
+      .filter(([id]) => !definedUpstream.has(id))
+      .sort(([idA], [idB]) => idA.localeCompare(idB));
+    const missingUpstream = [...definedUpstream.entries()]
+      .filter(([id]) => !referencedInDownstream.has(id))
+      .sort(([idA], [idB]) => idA.localeCompare(idB));
     if (options.debug && !options.quiet) {
       const upstreamName = config.layers[upstreamIndex]?.name ?? "(unknown)";
       const downstreamName = config.layers[downstreamIndex]?.name ?? "(unknown)";
       const definedIds = [...definedUpstream.keys()].sort();
       const referencedIds = [...referencedInDownstream.keys()].sort();
+      const downstreamDefinitionRanges = buildDefinitionRangesByFile(
+        parsedLayers[downstreamIndex].definitions
+      );
+      const matchedPairs = definedIds
+        .filter((id) => referencedInDownstream.has(id))
+        .map((id) => {
+          const ref = referencedInDownstream.get(id)!;
+          const downstreamDef = findDefinitionForLine(
+            downstreamDefinitionRanges,
+            ref.filePath,
+            ref.line
+          );
+          return {
+            id,
+            def: definedUpstream.get(id)!,
+            ref,
+            downstreamId: downstreamDef?.id
+          };
+        });
       const upstreamAllDefinitions = [...parsedLayers[upstreamIndex].definitions]
         .map((token) => token.id)
         .sort();
@@ -330,6 +370,25 @@ export function validateTraceability(
           ", "
         ) || "(none)"}`
       );
+      if (matchedPairs.length === 0) {
+        console.log(`Adjacency ${upstreamName} -> ${downstreamName}: Pairs=(none)`);
+      } else {
+        console.log(`Adjacency ${upstreamName} -> ${downstreamName}: Pairs=`);
+        for (const pair of matchedPairs) {
+          const downId = pair.downstreamId ?? "?";
+          console.log(`  ${pair.id} -> ${downId} (${pair.def.filePath}:${pair.def.line} -> ${pair.ref.filePath}:${pair.ref.line})`);
+        }
+      }
+      console.log(
+        `Adjacency ${upstreamName} -> ${downstreamName}: UnmatchedUpstream=${missingUpstream
+          .map(([id]) => id)
+          .join(", ") || "(none)"}`
+      );
+      console.log(
+        `Adjacency ${upstreamName} -> ${downstreamName}: UnmatchedDownstream=${unknownReferences
+          .map(([id]) => id)
+          .join(", ") || "(none)"}`
+      );
       console.log(
         `Debug ${upstreamName}: ParsedDefinitions=${upstreamAllDefinitions.join(", ") || "(none)"}`
       );
@@ -338,9 +397,6 @@ export function validateTraceability(
       );
     }
 
-    const unknownReferences = [...referencedInDownstream.entries()]
-      .filter(([id]) => !definedUpstream.has(id))
-      .sort(([idA], [idB]) => idA.localeCompare(idB));
     for (const [id, token] of unknownReferences) {
       const lines = fileLines.get(token.filePath) ?? [];
       const issuePath = resolveIssuePath(rootPath, config, token.filePath);
@@ -356,9 +412,6 @@ export function validateTraceability(
     }
 
     if (!resolution?.enabled) {
-      const missingUpstream = [...definedUpstream.entries()]
-        .filter(([id]) => !referencedInDownstream.has(id))
-        .sort(([idA], [idB]) => idA.localeCompare(idB));
       for (const [id, token] of missingUpstream) {
         const lines = fileLines.get(token.filePath) ?? [];
         const issuePath = resolveIssuePath(rootPath, config, token.filePath);
@@ -385,7 +438,7 @@ export function validateTraceability(
         const resolutionIndex = config.layers.findIndex(
           (entry) => entry.name === token.resolution
         );
-        if (resolutionIndex <= layerIndexToCheck) {
+        if (resolutionIndex < layerIndexToCheck) {
           const lines = fileLines.get(token.filePath) ?? [];
           const issuePath = resolveIssuePath(rootPath, config, token.filePath);
           issues.push(
@@ -404,14 +457,7 @@ export function validateTraceability(
           continue;
         }
 
-        let actualIndex = layerIndexToCheck;
-        while (actualIndex + 1 < referencedIdsByLayer.length) {
-          const nextIndex = actualIndex + 1;
-          if (!referencedIdsByLayer[nextIndex].has(token.id)) {
-            break;
-          }
-          actualIndex = nextIndex;
-        }
+        const actualIndex = traceDownstreamReach(referencedIdsByLayer, token.id, layerIndexToCheck);
 
         if (actualIndex !== resolutionIndex) {
           const lines = fileLines.get(token.filePath) ?? [];

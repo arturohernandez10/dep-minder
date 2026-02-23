@@ -103,8 +103,8 @@ Runs only when `resolution.enabled: true`. For each definition that carries
 a `resolution` value:
 
 - **E211**: compare the definition's layer index against the resolution
-  layer's index. If resolution index <= definition index, the marker points
-  backward (or at itself without being the default) — emit E211. Checked
+  layer's index. If resolution index < definition index, the marker points
+  backward — emit E211. Checked
   before E220 because a directionally invalid marker makes trace comparison
   meaningless.
 - **E220**: using the adjacency data from Phase 2, trace how far downstream

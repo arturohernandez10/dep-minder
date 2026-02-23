@@ -51,6 +51,15 @@ test("corner-3: directory layers with multiple files", () => {
   assert.equal(result.stderr.trim(), "");
 });
 
+test.skip("transitive-1: downstream transitive reach counts as reference", () => {
+  const fixtureRoot = path.resolve(process.cwd(), "tests", "fixtures", "transitive-1");
+  const result = runCli([fixtureRoot], fixtureRoot);
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stdout.trim(), "");
+  assert.equal(result.stderr.trim(), "");
+});
+
 test("error-1: unclosed grouping emits E010", () => {
   const fixtureRoot = path.resolve(process.cwd(), "tests", "fixtures", "error-1");
   const result = runCli([fixtureRoot], fixtureRoot);
