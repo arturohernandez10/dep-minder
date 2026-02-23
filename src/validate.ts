@@ -38,6 +38,71 @@ function normalizeRelativePath(value: string): string {
   return value.replace(/\\/g, "/");
 }
 
+function decodeFileContents(filePath: string): string {
+  const buffer = fs.readFileSync(filePath);
+  if (buffer.length >= 2) {
+    const bom0 = buffer[0];
+    const bom1 = buffer[1];
+    if (bom0 === 0xff && bom1 === 0xfe) {
+      return buffer.subarray(2).toString("utf16le");
+    }
+    if (bom0 === 0xfe && bom1 === 0xff) {
+      const sliced = buffer.subarray(2);
+      const swapped = Buffer.allocUnsafe(sliced.length);
+      for (let i = 0; i + 1 < sliced.length; i += 2) {
+        swapped[i] = sliced[i + 1];
+        swapped[i + 1] = sliced[i];
+      }
+      return swapped.toString("utf16le");
+    }
+  }
+  const zeroBytes = buffer.subarray(0, Math.min(buffer.length, 200)).filter((value) => value === 0x00).length;
+  if (zeroBytes > 0) {
+    return buffer.toString("utf16le");
+  }
+  return buffer.toString("utf8");
+}
+
+function formatCodePoints(value: string): string {
+  return value
+    .split("")
+    .map((char) => `${char}(U+${char.codePointAt(0)?.toString(16).toUpperCase().padStart(4, "0")})`)
+    .join(" ");
+}
+
+function collectIntentDiagnostics(lines: string[], limit: number): string[] {
+  const results: string[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    if (results.length >= limit) {
+      break;
+    }
+    const line = lines[i];
+    const matches = line.match(/INTENT[^\s]*/g) ?? [];
+    if (matches.length === 0) {
+      continue;
+    }
+    for (const match of matches) {
+      if (results.length >= limit) {
+        break;
+      }
+      results.push(`line ${i + 1}: ${formatCodePoints(match)}`);
+    }
+  }
+  return results;
+}
+
+function collectSampleLineDiagnostics(lines: string[], limit: number): string[] {
+  const results: string[] = [];
+  for (let i = 0; i < lines.length && results.length < limit; i += 1) {
+    const line = lines[i].trim();
+    if (line.length === 0) {
+      continue;
+    }
+    results.push(`line ${i + 1}: ${formatCodePoints(line)}`);
+  }
+  return results;
+}
+
 function resolveIssuePath(
   rootPath: string,
   config: TraceValidatorConfig,
@@ -146,7 +211,7 @@ export function validateTraceability(
     const upstreamPatterns = index > 0 ? layerRegexes[index - 1] ?? [] : [];
 
     for (const file of layer.files) {
-      const text = fs.readFileSync(file.absolutePath, "utf-8");
+      const text = decodeFileContents(file.absolutePath);
       const lines = text.split(/\r?\n/);
       fileLines.set(file.relativePath, lines);
       const issuePath = resolveIssuePath(rootPath, config, file.relativePath);
@@ -174,6 +239,23 @@ export function validateTraceability(
       );
       for (const token of parsed.references) {
         referencedIdsByLayer[index].add(token.id);
+      }
+
+      if (options.debug && !options.quiet && config.layers[index]?.name === "intents") {
+        const intentDiagnostics = collectIntentDiagnostics(lines, 10);
+        console.log(
+          `Debug intents: LayerPatterns=${layerPatterns.map((pattern) => pattern.source).join(" | ") || "(none)"}`
+        );
+        if (intentDiagnostics.length > 0) {
+          console.log(
+            `Debug intents: RawIntentTokens=${intentDiagnostics.join(" | ")}`
+          );
+        } else {
+          const sampleDiagnostics = collectSampleLineDiagnostics(lines, 3);
+          console.log(
+            `Debug intents: NoIntentTokensFound; SampleLines=${sampleDiagnostics.join(" | ") || "(none)"}`
+          );
+        }
       }
     }
   }
@@ -215,6 +297,12 @@ export function validateTraceability(
       const downstreamName = config.layers[downstreamIndex]?.name ?? "(unknown)";
       const definedIds = [...definedUpstream.keys()].sort();
       const referencedIds = [...referencedInDownstream.keys()].sort();
+      const upstreamAllDefinitions = [...parsedLayers[upstreamIndex].definitions]
+        .map((token) => token.id)
+        .sort();
+      const downstreamAllReferences = [...parsedLayers[downstreamIndex].references]
+        .map((token) => token.id)
+        .sort();
       console.log(
         `Adjacency ${upstreamName} -> ${downstreamName}: DefinedUpstream=${definedIds.join(
           ", "
@@ -224,6 +312,12 @@ export function validateTraceability(
         `Adjacency ${upstreamName} -> ${downstreamName}: ReferencedInDownstream=${referencedIds.join(
           ", "
         ) || "(none)"}`
+      );
+      console.log(
+        `Debug ${upstreamName}: ParsedDefinitions=${upstreamAllDefinitions.join(", ") || "(none)"}`
+      );
+      console.log(
+        `Debug ${downstreamName}: ParsedReferences=${downstreamAllReferences.join(", ") || "(none)"}`
       );
     }
 
@@ -310,7 +404,7 @@ export function validateTraceability(
           issues.push(
             createIssue(
               "E220",
-              `MismatchedResolution: expected ${resolvedName}, found ${actualName}`,
+              `MismatchedResolution: definition annotated ${resolvedName}, trace ends at ${actualName}`,
               issuePath,
               token.line,
               lines

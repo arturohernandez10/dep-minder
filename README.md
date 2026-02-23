@@ -142,7 +142,7 @@ Common codes:
 - `E211` OutOfOrderResolutionLevel
   A definition in layer `D` is marked as resolved through a layer `R` where `R` precedes `D` in the layers list.
 - `E220` MismatchedResolution
-  Annotated resolution level is mismatched: trace falls short of the layer or extends past it.
+  Definition annotation does not match the observed downstream trace (falls short or extends past).
 
 Notes on flags:
 

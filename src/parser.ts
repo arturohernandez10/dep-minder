@@ -266,10 +266,20 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
     if (tokenBuffer.length === 0) {
       return;
     }
-    handleToken(tokenBuffer, tokenBuffer, tokenLine, context, options, lines, output, {
-      inQuote: inQuote !== null,
-      inGrouping: false
-    }, resolutionLevel);
+    handleToken(
+      tokenBuffer,
+      tokenBuffer,
+      tokenLine,
+      context,
+      options,
+      lines,
+      output,
+      {
+        inQuote: false,
+        inGrouping: false
+      },
+      resolutionLevel
+    );
     tokenBuffer = "";
   };
 
@@ -347,17 +357,16 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
       continue;
     }
 
-    const isQuote = options.text[index] === '"' || options.text[index] === "'";
     const isWhitespace = /\s/.test(options.text[index]);
     const isSeparator =
       separator.length > 0 && options.text.startsWith(separator, index);
     const isStartGrouping =
-      !inQuote && groupingStart.length > 0 && options.text.startsWith(groupingStart, index);
+      groupingStart.length > 0 && options.text.startsWith(groupingStart, index);
     const isEndGrouping =
-      !inQuote && groupingEnd.length > 0 && options.text.startsWith(groupingEnd, index);
+      groupingEnd.length > 0 && options.text.startsWith(groupingEnd, index);
 
     if (isStartGrouping) {
-      flushToken(inQuote ? "reference" : "definition");
+      flushToken("definition");
       inGrouping = true;
       groupingStartLine = line;
       groupingBuffer = "";
@@ -366,7 +375,7 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
     }
 
     if (isEndGrouping) {
-      flushToken(inQuote ? "reference" : "definition");
+      flushToken("definition");
       output.issues.push(
         createIssue("E010", "Malformed grouping", options.filePath, line, lines)
       );
@@ -374,27 +383,13 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
       continue;
     }
 
-    if (isQuote && !inQuote) {
-      flushToken("definition");
-      inQuote = options.text[index] as "'" | '"';
-      advance(1);
-      continue;
-    }
-
-    if (isQuote && inQuote === options.text[index]) {
-      flushToken("reference");
-      inQuote = null;
-      advance(1);
-      continue;
-    }
-
     if (isSeparator) {
-      flushToken(inQuote ? "reference" : "definition");
+      flushToken("definition");
       advance(separator.length);
       continue;
     }
 
-    if (!inGrouping && !inQuote && options.resolution?.enabled && tokenBuffer.length > 0) {
+    if (!inGrouping && options.resolution?.enabled && tokenBuffer.length > 0) {
       const separator = options.resolution.separator;
       if (separator.length > 0 && options.text.startsWith(separator, index)) {
         let scanIndex = index + separator.length;
@@ -403,7 +398,7 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
           resolutionLevel += options.text[scanIndex];
           scanIndex += 1;
         }
-        flushToken(inQuote ? "reference" : "definition", resolutionLevel);
+        flushToken("definition", resolutionLevel);
         advance(separator.length + resolutionLevel.length);
         continue;
       }
@@ -413,11 +408,11 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
       isWhitespace ||
       !isAllowedTokenCharWithResolution(
         options.text[index],
-        (options.resolution?.enabled ?? false) && inQuote !== null,
+        false,
         options.resolution?.separator
       )
     ) {
-      flushToken(inQuote ? "reference" : "definition");
+      flushToken("definition");
       advance(1);
       continue;
     }
@@ -429,7 +424,7 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
     advance(1);
   }
 
-  flushToken(inQuote ? "reference" : "definition");
+  flushToken("definition");
 
   if (inGrouping) {
     output.issues.push(

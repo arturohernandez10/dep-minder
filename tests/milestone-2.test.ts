@@ -199,7 +199,7 @@ test("error-220: mismatched resolution emits E220", () => {
   assert.equal(result.exitCode, 1);
   expectErrorBlock(result.stderr, {
     code: "E220",
-    message: "MismatchedResolution: expected invariants, found capabilities",
+    message: "MismatchedResolution: definition annotated invariants, trace ends at capabilities",
     file: "l0-intents.md",
     line: 2,
     context: ["# Intents", "INTENT-1@invariants User can sign in.", ""]
