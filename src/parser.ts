@@ -4,6 +4,8 @@ export type ParsedToken = {
   id: string;
   raw: string;
   line: number;
+  offset: number;
+  length: number;
   resolution?: string;
 };
 
@@ -123,12 +125,14 @@ function resolveTokenLineFromSegment(segment: string, startIndex: number): numbe
 function splitGroupingTokens(
   content: string,
   startLine: number,
-  separator: string
-): Array<{ raw: string; line: number }> {
-  const tokens: Array<{ raw: string; line: number }> = [];
+  separator: string,
+  baseOffset: number
+): Array<{ raw: string; line: number; offset: number }> {
+  const tokens: Array<{ raw: string; line: number; offset: number }> = [];
   let index = 0;
   let lineOffset = 0;
   let segmentStartLineOffset = 0;
+  let segmentStartIndex = 0;
   let segment = "";
 
   const pushSegment = () => {
@@ -140,7 +144,8 @@ function splitGroupingTokens(
         segmentStartLineOffset + resolveTokenLineFromSegment(raw, leadingWhitespace);
       tokens.push({
         raw: trimmed,
-        line: startLine + tokenLineOffset
+        line: startLine + tokenLineOffset,
+        offset: baseOffset + segmentStartIndex + leadingWhitespace
       });
     }
     segment = "";
@@ -151,6 +156,7 @@ function splitGroupingTokens(
     if (separator.length > 0 && content.startsWith(separator, index)) {
       pushSegment();
       index += separator.length;
+      segmentStartIndex = index;
       continue;
     }
 
@@ -170,6 +176,8 @@ function handleToken(
   raw: string,
   normalized: string,
   line: number,
+  offset: number,
+  length: number,
   context: TokenContext,
   options: ParserOptions,
   lines: string[],
@@ -236,11 +244,11 @@ function handleToken(
 
   const eligibleDefinition = context === "definition";
   if (matchesLayer && eligibleDefinition) {
-    output.definitions.push({ id: normalizedId, raw, line, resolution });
+    output.definitions.push({ id: normalizedId, raw, line, offset, length, resolution });
     return;
   }
 
-  output.references.push({ id: normalizedId, raw, line, resolution });
+  output.references.push({ id: normalizedId, raw, line, offset, length, resolution });
 }
 
 export function parseLayerFile(options: ParserOptions): ParsedFile {
@@ -258,11 +266,13 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
   let inQuote: "'" | '"' | null = null;
   let inGrouping = false;
   let groupingStartLine = 1;
+  let groupingStartIndex = 0;
   let groupingBuffer = "";
   let tokenBuffer = "";
   let tokenLine = 1;
+  let tokenStartIndex = 0;
 
-  const flushToken = (context: TokenContext, resolutionLevel?: string) => {
+  const flushToken = (context: TokenContext, resolutionLevel?: string, tokenLength?: number) => {
     if (tokenBuffer.length === 0) {
       return;
     }
@@ -270,6 +280,8 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
       tokenBuffer,
       tokenBuffer,
       tokenLine,
+      tokenStartIndex,
+      tokenLength ?? tokenBuffer.length,
       context,
       options,
       lines,
@@ -299,7 +311,12 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
   while (index < options.text.length) {
     if (inGrouping) {
       if (groupingEnd.length > 0 && options.text.startsWith(groupingEnd, index)) {
-        const tokens = splitGroupingTokens(groupingBuffer, groupingStartLine, separator);
+        const tokens = splitGroupingTokens(
+          groupingBuffer,
+          groupingStartLine,
+          separator,
+          groupingStartIndex
+        );
         if (tokens.length === 0) {
           output.issues.push(
             createIssue(
@@ -333,6 +350,8 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
               original,
               normalized,
               token.line,
+              token.offset,
+              original.trim().length,
               "reference",
               options,
               lines,
@@ -369,6 +388,7 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
       flushToken("definition");
       inGrouping = true;
       groupingStartLine = line;
+      groupingStartIndex = index + groupingStart.length;
       groupingBuffer = "";
       advance(groupingStart.length);
       continue;
@@ -398,7 +418,8 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
           resolutionLevel += options.text[scanIndex];
           scanIndex += 1;
         }
-        flushToken("definition", resolutionLevel);
+        const tokenLength = tokenBuffer.length + separator.length + resolutionLevel.length;
+        flushToken("definition", resolutionLevel, tokenLength);
         advance(separator.length + resolutionLevel.length);
         continue;
       }
@@ -419,6 +440,7 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
 
     if (tokenBuffer.length === 0) {
       tokenLine = line;
+      tokenStartIndex = index;
     }
     tokenBuffer += options.text[index];
     advance(1);

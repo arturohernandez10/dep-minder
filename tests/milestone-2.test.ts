@@ -119,6 +119,58 @@ test("resolution-1: resolution enabled suppresses E101", () => {
   assert.equal(result.stderr.trim(), "");
 });
 
+test("set-resolution-1: dry run lists missing markers", () => {
+  const fixtureRoot = path.resolve(
+    process.cwd(),
+    "tests",
+    "fixtures",
+    "set-resolution-1"
+  );
+  const result = runCli([fixtureRoot, "--set-resolution", "--dry-run"], fixtureRoot);
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stderr.trim(), "");
+  const output = normalizeOutput(result.stdout);
+  assert.ok(
+    output.includes("Dry run: 3 update(s) across 2 file(s)."),
+    "Expected dry-run summary"
+  );
+  assert.ok(
+    output.includes("l0-intents.md:2 INTENT-1 -> INTENT-1@capabilities"),
+    "Expected INTENT-1 update"
+  );
+  assert.ok(
+    output.includes("l0-intents.md:3 INTENT-2 -> INTENT-2@intents"),
+    "Expected INTENT-2 update"
+  );
+  assert.ok(
+    output.includes("l1-capabilities.md:2 CAP-1 -> CAP-1@capabilities"),
+    "Expected CAP-1 update"
+  );
+});
+
+test("fix-resolution-1: dry run lists incorrect markers", () => {
+  const fixtureRoot = path.resolve(
+    process.cwd(),
+    "tests",
+    "fixtures",
+    "fix-resolution-1"
+  );
+  const result = runCli([fixtureRoot, "--fix-resolution", "--dry-run"], fixtureRoot);
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stderr.trim(), "");
+  const output = normalizeOutput(result.stdout);
+  assert.ok(
+    output.includes("Dry run: 1 update(s) across 1 file(s)."),
+    "Expected dry-run summary"
+  );
+  assert.ok(
+    output.includes("l0-intents.md:2 INTENT-1@intents -> INTENT-1@capabilities"),
+    "Expected INTENT-1 fix"
+  );
+});
+
 test("error-020: bad ID token emits E020", () => {
   const fixtureRoot = path.resolve(process.cwd(), "tests", "fixtures", "error-020");
   const result = runCli([fixtureRoot], fixtureRoot);

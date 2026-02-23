@@ -10,12 +10,21 @@ type TokenWithSource = {
   raw: string;
   line: number;
   filePath: string;
+  offset: number;
+  length: number;
   resolution?: string;
 };
 
-type ParsedLayer = {
+export type ParsedLayer = {
   definitions: TokenWithSource[];
   references: TokenWithSource[];
+};
+
+export type TraceAnalysis = {
+  issues: Issue[];
+  parsedLayers: ParsedLayer[];
+  referencedIdsByLayer: Array<Set<string>>;
+  fileLines: Map<string, string[]>;
 };
 
 export type ValidationOptions = {
@@ -151,10 +160,18 @@ function resolveLayerIndex(config: TraceValidatorConfig, layer?: string): number
 }
 
 function toTokenWithSource(
-  token: { id: string; raw: string; line: number; resolution?: string },
+  token: { id: string; raw: string; line: number; offset: number; length: number; resolution?: string },
   filePath: string
 ) {
-  return { id: token.id, raw: token.raw, line: token.line, filePath, resolution: token.resolution };
+  return {
+    id: token.id,
+    raw: token.raw,
+    line: token.line,
+    filePath,
+    offset: token.offset,
+    length: token.length,
+    resolution: token.resolution
+  };
 }
 
 function addToMapIfMissing(map: Map<string, TokenWithSource>, token: TokenWithSource): void {
@@ -184,7 +201,7 @@ export function validateTraceability(
   collection: LayerFileCollection,
   options: ValidationOptions,
   resolution?: ResolutionLookup
-): Issue[] {
+): TraceAnalysis {
   const issues: Issue[] = [];
   const layerRegexes = compileLayerRegexes(config);
   const layerIndex = resolveLayerIndex(config, options.layer);
@@ -415,5 +432,10 @@ export function validateTraceability(
     }
   }
 
-  return issues;
+  return {
+    issues,
+    parsedLayers,
+    referencedIdsByLayer,
+    fileLines
+  };
 }

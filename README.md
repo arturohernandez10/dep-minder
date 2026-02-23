@@ -38,6 +38,9 @@ Options:
 - `--max-errors <n>`: override error cap for this run
 - `--format <text|json>`: output format (default `text`)
 - `--layer <name>`: validate only one downstream layer pair
+- `--set-resolution`: add missing resolution markers to definitions
+- `--fix-resolution`: update incorrect resolution markers
+- `--dry-run`: preview resolution updates without writing
 - `--strict`: treat all emitted issues as errors
 - `-q, --quiet`: suppress non-error output
 - `--debug`: print debug information
@@ -111,6 +114,12 @@ Examples:
 
 - `CAP-12:capabilities User can export reports` (resolved through `capabilities`)
 - `CAP-13:L1 User can export reports` (same, using an alias)
+
+### Resolution updates (optional)
+
+Use `--set-resolution` to add missing markers, or `--fix-resolution` to correct mismatches.
+With `--dry-run`, no files are written. When updates run, the CLI prints a summary and the
+files touched (one line per file) in non-verbose mode.
 
 ## Issues (errors and warnings)
 
