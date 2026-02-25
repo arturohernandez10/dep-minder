@@ -25,10 +25,10 @@
 - **E101/E030 (coverage & unknown refs):**  
   Uses `parsedLayers`, `layerRegexes`, plus adjacency loop that filters `references` by immediate upstream patterns.
 - **Resolution checks (E211/E220):**  
-  Uses `referencedIdsByLayer` via `traceDownstreamReach(id, startLayer)`.
+  Uses `traceGraph.reachById` for actual reach.
 
 - **`--set-resolution` / `--fix-resolution`:**  
-  Uses `analysis.referencedIdsByLayer` and `traceDownstreamReach` to compute target resolution.
+  Uses `analysis.traceGraph.reachById` to compute target resolution.
 
 ---
 
@@ -54,14 +54,14 @@ For each adjacent layer pair `(upstreamIndex, downstreamIndex)`:
 For each definition token:
 
 1. Determine declared resolution level
-2. Compute **actual reach** with `traceDownstreamReach`  
-   - Walks layer-by-layer: "does the *same ID* appear in next layer's reference set?"
+2. Compute **actual reach** with `traceGraph.reachById`  
+  - Uses transitive reach from graph edges
 3. If mismatch: emit `E220`  
 4. If out-of-order: emit `E211`
 
 ### 4) Fix/Set resolution (writer path)
 
-- After validation, `computeResolutionEdits` runs `traceDownstreamReach` and proposes edits
+- After validation, `computeResolutionEdits` reads `traceGraph.reachById` and proposes edits
 
 ---
 
@@ -72,28 +72,28 @@ For each definition token:
 The concept of "which IDs connect layer N to layer N+1" is computed **twice**,
 in two different representations that cannot share results:
 
-| Aspect | Adjacency loop (Phase 2) | `traceDownstreamReach` (Phase 3 + writer) |
+| Aspect | Adjacency loop (Phase 2) | `traceGraph.reachById` (Phase 3 + writer) |
 |---|---|---|
-| **Data source** | `parsedLayers[N].definitions` + `parsedLayers[N+1].references` filtered by upstream regex | `referencedIdsByLayer[N+1].has(id)` (flat set, no regex filter) |
+| **Data source** | `parsedLayers[N].definitions` + `parsedLayers[N+1].references` filtered by upstream regex | `traceGraph.reachById` derived from filtered graph edges |
 | **Scope** | One pair at a time | Walks all layers from start to end |
-| **Filtering** | Applies `upstreamPatterns` regex to downstream refs | No filtering — any ID in the set counts |
-| **Output** | Two maps (`definedUpstream`, `referencedInDownstream`) | A single integer (deepest layer index) |
+| **Filtering** | Applies `upstreamPatterns` regex to downstream refs | Inherits the same upstream regex filtering via graph build |
+| **Output** | Two maps (`definedUpstream`, `referencedInDownstream`) | A `reachById` lookup (deepest layer index per definition) |
 | **Consumers** | E030, E101, debug output | E220, E211, `computeResolutionEdits` |
 
 ### Why this is a problem
 
 1. **Semantic drift risk.** The adjacency loop filters downstream references by
    upstream regex patterns — a reference to `CAP-1` in layer 2 only counts if
-   `CAP-1` matches layer 1's ID patterns. But `traceDownstreamReach` checks the
-   raw `referencedIdsByLayer` set which was populated *without* that filter. If a
-   downstream layer references an ID that matches its *own* layer pattern (not
-   the upstream's), the adjacency loop ignores it but `traceDownstreamReach`
-   counts it. The two views of "is this ID traced?" can disagree.
+   `CAP-1` matches layer 1's ID patterns. The old reach check used
+   the raw `referencedIdsByLayer` set which was populated *without* that filter.
+   If a downstream layer references an ID that matches its *own* layer pattern
+   (not the upstream's), the adjacency loop ignored it but the reach check
+   counted it. The two views of "is this ID traced?" could disagree.
 
 2. **Transitive blindness.** The adjacency loop only sees direct pairs. It
    cannot answer "does `CON-3.1` eventually reach the capabilities layer?" — it
    only knows whether `CON-3.1` is referenced in the *immediately next* layer.
-   `traceDownstreamReach` can walk further, but it looks for the *same literal
+   The old reach check could walk further, but it looked for the *same literal
    ID* in each layer's reference set, which is wrong for transitive chains where
    the ID changes at each hop (e.g. `CON-3.1` → `INV-6.0` → `CAP-1.1`).
 
@@ -123,8 +123,7 @@ TraceGraph = {
   and `referencedIdsByLayer`.
 
 - **`reach[definitionId]`**: the transitive closure — the deepest layer a
-  definition's influence reaches through the chain of edges. This replaces
-  `traceDownstreamReach`.
+  definition's influence reaches through the chain of edges.
 
 ### How to build it
 
@@ -160,7 +159,7 @@ Phase 3 — Validate resolution (uses TraceGraph)
 
 Phase 4 — Fix/Set resolution (uses TraceGraph)
   computeResolutionEdits reads reach[defId].terminal directly
-  (no separate traceDownstreamReach call)
+  (no separate reach traversal call)
 ```
 
 ### What this fixes
@@ -168,8 +167,8 @@ Phase 4 — Fix/Set resolution (uses TraceGraph)
 | Problem | Before | After |
 |---|---|---|
 | Semantic drift | Two different filtering strategies | Single filtered edge set, used everywhere |
-| Transitive chains | `traceDownstreamReach` follows same-ID only | Graph edges track ID-to-ID links across layers |
-| Code duplication (adjacency) | Adjacency loop + `traceDownstreamReach` | One graph build, multiple consumers |
+| Transitive chains | Same-ID reach traversal only | Graph edges track ID-to-ID links across layers |
+| Code duplication (adjacency) | Adjacency loop + reach traversal | One graph build, multiple consumers |
 | Code duplication (file decode) | `decodeFileContents` + `decodeFileWithEncoding` | Extract shared `decodeFile` into `src/encoding.ts` |
 
 ### Transitive example (Core 4)
@@ -194,24 +193,21 @@ though the literal string `CON-3.1` never appears in layer 2.
 
 ---
 
-## Migration steps
+## Migration steps (completed)
 
 1. **Extract `src/encoding.ts`** — move `decodeFileContents` /
    `decodeFileWithEncoding` into a shared module. Both `validate.ts` and
    `resolution-writer.ts` import from it.
 
 2. **Build `TraceGraph` in `validate.ts`** — after parsing, construct the edge
-   map and transitive reach. Keep the existing adjacency loop temporarily so
-   both paths run side-by-side for comparison in tests.
+   map and transitive reach.
 
 3. **Migrate E030/E101 to graph** — emit E030 during graph construction, E101
    from `reach`. Remove the old adjacency loop.
 
-4. **Migrate E220/E211 to graph** — replace `traceDownstreamReach` calls with
-   `reach` lookups.
+4. **Migrate E220/E211 to graph** — replace reach checks with `reachById`.
 
-5. **Migrate `computeResolutionEdits`** — pass `TraceGraph` instead of
-   `referencedIdsByLayer`. Remove `traceDownstreamReach` export.
+5. **Migrate `computeResolutionEdits`** — read `traceGraph.reachById` directly.
 
 6. **Update debug output** — reconstruct adjacency debug view from graph edges
    instead of the old loop's local maps.

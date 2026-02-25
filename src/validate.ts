@@ -1,8 +1,8 @@
-import fs from "node:fs";
 import path from "node:path";
 import type { LayerFileCollection } from "./collection";
 import type { ResolutionLookup, TraceValidatorConfig } from "./config";
 import type { Issue } from "./reporting";
+import { decodeFileContents } from "./encoding";
 import { parseLayerFile } from "./parser";
 
 type TokenWithSource = {
@@ -31,12 +31,34 @@ export type TraceAnalysis = {
   parsedLayers: ParsedLayer[];
   referencedIdsByLayer: Array<Set<string>>;
   fileLines: Map<string, string[]>;
+  traceGraph: TraceGraph;
 };
 
 export type ValidationOptions = {
   layer?: string;
   debug?: boolean;
   quiet?: boolean;
+};
+
+export type TraceGraph = {
+  edgesByLayer: Map<number, Map<string, Set<string>>>;
+  reachById: Map<string, { origin: number; terminal: number }>;
+  adjacencyByLayer: Map<number, AdjacencySnapshot>;
+};
+
+type AdjacencySnapshot = {
+  definedUpstream: Map<string, TokenWithSource>;
+  referencedInDownstream: Map<string, TokenWithSource>;
+  unknownReferences: Array<[string, TokenWithSource]>;
+  missingUpstream: Array<[string, TokenWithSource]>;
+  matchedPairs: Array<{
+    id: string;
+    def: TokenWithSource;
+    ref: TokenWithSource;
+    downstreamId?: string;
+  }>;
+  upstreamAllDefinitions: string[];
+  downstreamAllReferences: string[];
 };
 
 function matchesAny(patterns: RegExp[], value: string): boolean {
@@ -51,31 +73,6 @@ function buildContextSnippet(lines: string[], lineIndex: number): string[] {
 
 function normalizeRelativePath(value: string): string {
   return value.replace(/\\/g, "/");
-}
-
-function decodeFileContents(filePath: string): string {
-  const buffer = fs.readFileSync(filePath);
-  if (buffer.length >= 2) {
-    const bom0 = buffer[0];
-    const bom1 = buffer[1];
-    if (bom0 === 0xff && bom1 === 0xfe) {
-      return buffer.subarray(2).toString("utf16le");
-    }
-    if (bom0 === 0xfe && bom1 === 0xff) {
-      const sliced = buffer.subarray(2);
-      const swapped = Buffer.allocUnsafe(sliced.length);
-      for (let i = 0; i + 1 < sliced.length; i += 2) {
-        swapped[i] = sliced[i + 1];
-        swapped[i + 1] = sliced[i];
-      }
-      return swapped.toString("utf16le");
-    }
-  }
-  const zeroBytes = buffer.subarray(0, Math.min(buffer.length, 200)).filter((value) => value === 0x00).length;
-  if (zeroBytes > 0) {
-    return buffer.toString("utf16le");
-  }
-  return buffer.toString("utf8");
 }
 
 function resolveIssuePath(
@@ -195,20 +192,138 @@ function findDefinitionForLine(
   return undefined;
 }
 
-export function traceDownstreamReach(
-  referencedIdsByLayer: Array<Set<string>>,
-  id: string,
-  startIndex: number
-): number {
-  let index = startIndex;
-  while (index + 1 < referencedIdsByLayer.length) {
-    const nextIndex = index + 1;
-    if (!referencedIdsByLayer[nextIndex].has(id)) {
-      break;
+function buildTraceGraph(
+  parsedLayers: ParsedLayer[],
+  layerRegexes: RegExp[][],
+  pairsToValidate: number[]
+): TraceGraph {
+  const edgesByLayer = new Map<number, Map<string, Set<string>>>();
+  const adjacencyByLayer = new Map<number, AdjacencySnapshot>();
+
+  for (const downstreamIndex of pairsToValidate) {
+    const upstreamIndex = downstreamIndex - 1;
+    const upstreamPatterns = layerRegexes[upstreamIndex] ?? [];
+    const upstreamTokens = parsedLayers[upstreamIndex]?.definitions ?? [];
+    const downstreamTokens = parsedLayers[downstreamIndex]?.references ?? [];
+    const downstreamDefinitionRanges = buildDefinitionRangesByFile(
+      parsedLayers[downstreamIndex]?.definitions ?? []
+    );
+
+    const definedUpstream = new Map<string, TokenWithSource>();
+    for (const token of upstreamTokens) {
+      addToMapIfMissing(definedUpstream, token);
     }
-    index = nextIndex;
+
+    const referencedInDownstream = new Map<string, TokenWithSource>();
+    for (const token of downstreamTokens) {
+      if (!matchesAny(upstreamPatterns, token.id)) {
+        continue;
+      }
+      addToMapIfMissing(referencedInDownstream, token);
+    }
+
+    const layerEdges = edgesByLayer.get(downstreamIndex) ?? new Map<string, Set<string>>();
+    for (const ref of referencedInDownstream.values()) {
+      if (!definedUpstream.has(ref.id)) {
+        continue;
+      }
+      const downstreamDef = findDefinitionForLine(
+        downstreamDefinitionRanges,
+        ref.filePath,
+        ref.line
+      );
+      const downstreamId = downstreamDef
+        ? downstreamDef.id
+        : `__ref__:${normalizeRelativePath(ref.filePath)}:${ref.line}:${ref.offset}`;
+      const existing = layerEdges.get(ref.id);
+      if (existing) {
+        existing.add(downstreamId);
+      } else {
+        layerEdges.set(ref.id, new Set([downstreamId]));
+      }
+    }
+    edgesByLayer.set(downstreamIndex, layerEdges);
+
+    const definedIds = [...definedUpstream.keys()].sort();
+    const referencedIds = [...referencedInDownstream.keys()].sort();
+    const unknownReferences = [...referencedInDownstream.entries()]
+      .filter(([id]) => !definedUpstream.has(id))
+      .sort(([idA], [idB]) => idA.localeCompare(idB));
+    const missingUpstream = [...definedUpstream.entries()]
+      .filter(([id]) => !referencedInDownstream.has(id))
+      .sort(([idA], [idB]) => idA.localeCompare(idB));
+    const matchedPairs = definedIds
+      .filter((id) => referencedInDownstream.has(id))
+      .map((id) => {
+        const ref = referencedInDownstream.get(id)!;
+        const downstreamDef = findDefinitionForLine(
+          downstreamDefinitionRanges,
+          ref.filePath,
+          ref.line
+        );
+        return {
+          id,
+          def: definedUpstream.get(id)!,
+          ref,
+          downstreamId: downstreamDef?.id
+        };
+      });
+    const upstreamAllDefinitions = [...parsedLayers[upstreamIndex].definitions]
+      .map((token) => token.id)
+      .sort();
+    const downstreamAllReferences = [...parsedLayers[downstreamIndex].references]
+      .map((token) => token.id)
+      .sort();
+    adjacencyByLayer.set(downstreamIndex, {
+      definedUpstream,
+      referencedInDownstream,
+      unknownReferences,
+      missingUpstream,
+      matchedPairs,
+      upstreamAllDefinitions,
+      downstreamAllReferences
+    });
   }
-  return index;
+
+  const reachById = new Map<string, { origin: number; terminal: number }>();
+  const memo = new Map<string, number>();
+
+  const resolveReach = (layerIndex: number, id: string): number => {
+    const key = `${layerIndex}:${id}`;
+    const cached = memo.get(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const nextIndex = layerIndex + 1;
+    const layerEdges = edgesByLayer.get(nextIndex);
+    if (!layerEdges) {
+      memo.set(key, layerIndex);
+      return layerIndex;
+    }
+    const downstreamIds = layerEdges.get(id);
+    if (!downstreamIds || downstreamIds.size === 0) {
+      memo.set(key, layerIndex);
+      return layerIndex;
+    }
+    let terminal = layerIndex;
+    for (const downstreamId of downstreamIds) {
+      const downstreamTerminal = resolveReach(nextIndex, downstreamId);
+      if (downstreamTerminal > terminal) {
+        terminal = downstreamTerminal;
+      }
+    }
+    memo.set(key, terminal);
+    return terminal;
+  };
+
+  for (let layerIndex = 0; layerIndex < parsedLayers.length; layerIndex += 1) {
+    for (const token of parsedLayers[layerIndex]?.definitions ?? []) {
+      const terminal = resolveReach(layerIndex, token.id);
+      reachById.set(token.id, { origin: layerIndex, terminal });
+    }
+  }
+
+  return { edgesByLayer, reachById, adjacencyByLayer };
 }
 
 function isResolutionPathInScope(
@@ -299,6 +414,8 @@ export function validateTraceability(
         ? [layerIndex]
         : [];
 
+  const traceGraph = buildTraceGraph(parsedLayers, layerRegexes, pairsToValidate);
+
   for (const downstreamIndex of pairsToValidate) {
     if (!allowedLayerIndices.has(downstreamIndex)) {
       continue;
@@ -307,59 +424,16 @@ export function validateTraceability(
     if (!allowedLayerIndices.has(upstreamIndex)) {
       continue;
     }
-    const upstreamPatterns = layerRegexes[upstreamIndex] ?? [];
-    const upstreamTokens = parsedLayers[upstreamIndex].definitions;
-    const downstreamTokens = parsedLayers[downstreamIndex].references;
-
-    const definedUpstream = new Map<string, TokenWithSource>();
-    for (const token of upstreamTokens) {
-      addToMapIfMissing(definedUpstream, token);
+    const snapshot = traceGraph.adjacencyByLayer.get(downstreamIndex);
+    if (!snapshot) {
+      continue;
     }
 
-    const referencedInDownstream = new Map<string, TokenWithSource>();
-    for (const token of downstreamTokens) {
-      if (!matchesAny(upstreamPatterns, token.id)) {
-        continue;
-      }
-      addToMapIfMissing(referencedInDownstream, token);
-    }
-
-    const unknownReferences = [...referencedInDownstream.entries()]
-      .filter(([id]) => !definedUpstream.has(id))
-      .sort(([idA], [idB]) => idA.localeCompare(idB));
-    const missingUpstream = [...definedUpstream.entries()]
-      .filter(([id]) => !referencedInDownstream.has(id))
-      .sort(([idA], [idB]) => idA.localeCompare(idB));
     if (options.debug && !options.quiet) {
       const upstreamName = config.layers[upstreamIndex]?.name ?? "(unknown)";
       const downstreamName = config.layers[downstreamIndex]?.name ?? "(unknown)";
-      const definedIds = [...definedUpstream.keys()].sort();
-      const referencedIds = [...referencedInDownstream.keys()].sort();
-      const downstreamDefinitionRanges = buildDefinitionRangesByFile(
-        parsedLayers[downstreamIndex].definitions
-      );
-      const matchedPairs = definedIds
-        .filter((id) => referencedInDownstream.has(id))
-        .map((id) => {
-          const ref = referencedInDownstream.get(id)!;
-          const downstreamDef = findDefinitionForLine(
-            downstreamDefinitionRanges,
-            ref.filePath,
-            ref.line
-          );
-          return {
-            id,
-            def: definedUpstream.get(id)!,
-            ref,
-            downstreamId: downstreamDef?.id
-          };
-        });
-      const upstreamAllDefinitions = [...parsedLayers[upstreamIndex].definitions]
-        .map((token) => token.id)
-        .sort();
-      const downstreamAllReferences = [...parsedLayers[downstreamIndex].references]
-        .map((token) => token.id)
-        .sort();
+      const definedIds = [...snapshot.definedUpstream.keys()].sort();
+      const referencedIds = [...snapshot.referencedInDownstream.keys()].sort();
       console.log(
         `Adjacency ${upstreamName} -> ${downstreamName}: DefinedUpstream=${definedIds.join(
           ", "
@@ -370,34 +444,34 @@ export function validateTraceability(
           ", "
         ) || "(none)"}`
       );
-      if (matchedPairs.length === 0) {
+      if (snapshot.matchedPairs.length === 0) {
         console.log(`Adjacency ${upstreamName} -> ${downstreamName}: Pairs=(none)`);
       } else {
         console.log(`Adjacency ${upstreamName} -> ${downstreamName}: Pairs=`);
-        for (const pair of matchedPairs) {
+        for (const pair of snapshot.matchedPairs) {
           const downId = pair.downstreamId ?? "?";
           console.log(`  ${pair.id} -> ${downId} (${pair.def.filePath}:${pair.def.line} -> ${pair.ref.filePath}:${pair.ref.line})`);
         }
       }
       console.log(
-        `Adjacency ${upstreamName} -> ${downstreamName}: UnmatchedUpstream=${missingUpstream
+        `Adjacency ${upstreamName} -> ${downstreamName}: UnmatchedUpstream=${snapshot.missingUpstream
           .map(([id]) => id)
           .join(", ") || "(none)"}`
       );
       console.log(
-        `Adjacency ${upstreamName} -> ${downstreamName}: UnmatchedDownstream=${unknownReferences
+        `Adjacency ${upstreamName} -> ${downstreamName}: UnmatchedDownstream=${snapshot.unknownReferences
           .map(([id]) => id)
           .join(", ") || "(none)"}`
       );
       console.log(
-        `Debug ${upstreamName}: ParsedDefinitions=${upstreamAllDefinitions.join(", ") || "(none)"}`
+        `Debug ${upstreamName}: ParsedDefinitions=${snapshot.upstreamAllDefinitions.join(", ") || "(none)"}`
       );
       console.log(
-        `Debug ${downstreamName}: ParsedReferences=${downstreamAllReferences.join(", ") || "(none)"}`
+        `Debug ${downstreamName}: ParsedReferences=${snapshot.downstreamAllReferences.join(", ") || "(none)"}`
       );
     }
 
-    for (const [id, token] of unknownReferences) {
+    for (const [id, token] of snapshot.unknownReferences) {
       const lines = fileLines.get(token.filePath) ?? [];
       const issuePath = resolveIssuePath(rootPath, config, token.filePath);
       issues.push(
@@ -412,7 +486,7 @@ export function validateTraceability(
     }
 
     if (!resolution?.enabled) {
-      for (const [id, token] of missingUpstream) {
+      for (const [id, token] of snapshot.missingUpstream) {
         const lines = fileLines.get(token.filePath) ?? [];
         const issuePath = resolveIssuePath(rootPath, config, token.filePath);
         issues.push(
@@ -457,7 +531,8 @@ export function validateTraceability(
           continue;
         }
 
-        const actualIndex = traceDownstreamReach(referencedIdsByLayer, token.id, layerIndexToCheck);
+        const reach = traceGraph.reachById.get(token.id);
+        const actualIndex = reach?.terminal ?? layerIndexToCheck;
 
         if (actualIndex !== resolutionIndex) {
           const lines = fileLines.get(token.filePath) ?? [];
@@ -482,6 +557,7 @@ export function validateTraceability(
     issues,
     parsedLayers,
     referencedIdsByLayer,
-    fileLines
+    fileLines,
+    traceGraph
   };
 }

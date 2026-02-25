@@ -51,7 +51,7 @@ test("corner-3: directory layers with multiple files", () => {
   assert.equal(result.stderr.trim(), "");
 });
 
-test.skip("transitive-1: downstream transitive reach counts as reference", () => {
+test("transitive-1: downstream transitive reach counts as reference", () => {
   const fixtureRoot = path.resolve(process.cwd(), "tests", "fixtures", "transitive-1");
   const result = runCli([fixtureRoot], fixtureRoot);
 
