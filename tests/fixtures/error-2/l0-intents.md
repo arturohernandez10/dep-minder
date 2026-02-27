@@ -1,2 +1,2 @@
 # Intents
-INTENT-1: User can sign in.
+INTENT-1.0 User can sign in.

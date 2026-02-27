@@ -12,6 +12,7 @@ import {
   resolveMaxErrors
 } from "./reporting";
 import { validateTraceability } from "./validate";
+import { applyResolutionEdits, computeResolutionEdits } from "./resolution-writer";
 
 type OutputFormat = "text" | "json";
 
@@ -25,6 +26,9 @@ type CliOptions = {
   quiet: boolean;
   verbose: boolean;
   debug: boolean;
+  setResolution: boolean;
+  fixResolution: boolean;
+  dryRun: boolean;
   help: boolean;
   version: boolean;
 };
@@ -36,6 +40,9 @@ const DEFAULTS: CliOptions = {
   quiet: true,
   verbose: false,
   debug: false,
+  setResolution: false,
+  fixResolution: false,
+  dryRun: false,
   help: false,
   version: false
 };
@@ -61,6 +68,9 @@ Options:
   --max-errors <n>        Override max error output limit
   --format <text|json>    Output format (default: text)
   --layer <name>          Validate only one layer pair
+  --set-resolution        Add resolution markers when missing
+  --fix-resolution        Update incorrect resolution markers
+  --dry-run               Preview resolution updates without writing
   --strict                Treat all emitted issues as errors
   -q, --quiet             Suppress non-error output (default)
   --verbose               Show non-error output
@@ -111,6 +121,21 @@ function parseArgs(argv: string[]): CliOptions {
 
     if (arg === "--debug") {
       options.debug = true;
+      continue;
+    }
+
+    if (arg === "--set-resolution") {
+      options.setResolution = true;
+      continue;
+    }
+
+    if (arg === "--fix-resolution") {
+      options.fixResolution = true;
+      continue;
+    }
+
+    if (arg === "--dry-run") {
+      options.dryRun = true;
       continue;
     }
 
@@ -212,14 +237,77 @@ async function main(): Promise<void> {
       throw new Error(`Unknown layer: ${options.layer}`);
     }
 
-    const issues = validateTraceability(resolvedPath, config, collection, {
-      layer: options.layer,
-      debug: options.debug,
-      quiet: options.quiet
-    });
+    const analysis = validateTraceability(
+      resolvedPath,
+      config,
+      collection,
+      {
+        layer: options.layer,
+        debug: options.debug,
+        quiet: options.quiet
+      },
+      loaded.resolution
+    );
+
+    const updateRequested = options.setResolution || options.fixResolution;
+    if (updateRequested) {
+      if (!loaded.resolution?.enabled) {
+        throw new Error("Resolution markers are disabled. Enable resolution in config first.");
+      }
+
+      const parseErrors = analysis.issues.filter(
+        (issue) => issue.code === "E010" || issue.code === "E020"
+      );
+      if (parseErrors.length > 0) {
+        const codes = [...new Set(parseErrors.map((issue) => issue.code))].join(", ");
+        throw new Error(`Cannot update resolutions due to parse errors: ${codes}`);
+      }
+
+      if (options.fixResolution && analysis.issues.some((issue) => issue.code === "E110")) {
+        throw new Error("Cannot fix resolutions with unknown resolution levels (E110).");
+      }
+
+      const edits = computeResolutionEdits(config, analysis, loaded.resolution, {
+        set: options.setResolution,
+        fix: options.fixResolution
+      });
+      const result = applyResolutionEdits(resolvedPath, edits, options.dryRun);
+
+      if (result.edits.length === 0) {
+        console.log("No resolution updates needed.");
+        return;
+      }
+
+      const filesTouched = new Set(result.edits.map((edit) => edit.filePath)).size;
+      if (options.dryRun || options.verbose) {
+        console.log(
+          `${options.dryRun ? "Dry run" : "Applied"}: ${result.edits.length} update(s) across ${filesTouched} file(s).`
+        );
+        const sorted = [...result.edits].sort((a, b) =>
+          a.filePath === b.filePath ? a.line - b.line : a.filePath.localeCompare(b.filePath)
+        );
+        for (const edit of sorted) {
+          console.log(`${edit.filePath}:${edit.line} ${edit.oldText} -> ${edit.newText}`);
+        }
+      } else {
+        console.log(
+          `${result.edits.length} update(s) applied across ${filesTouched} file(s).`
+        );
+        const editCounts = new Map<string, number>();
+        for (const edit of result.edits) {
+          editCounts.set(edit.filePath, (editCounts.get(edit.filePath) ?? 0) + 1);
+        }
+        const sortedFiles = [...editCounts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+        for (const [filePath, count] of sortedFiles) {
+          console.log(`  ${filePath} (${count} update${count === 1 ? "" : "s"})`);
+        }
+      }
+      return;
+    }
+
     const maxErrors = resolveMaxErrors(config, options.maxErrors);
-    const limited = limitIssues(issues, maxErrors);
-    const summary = buildIssueSummary(issues, options.strict);
+    const limited = limitIssues(analysis.issues, maxErrors);
+    const summary = buildIssueSummary(analysis.issues, options.strict);
 
     if (options.format === "json") {
       const report = {

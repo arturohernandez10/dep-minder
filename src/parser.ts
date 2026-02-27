@@ -4,6 +4,9 @@ export type ParsedToken = {
   id: string;
   raw: string;
   line: number;
+  offset: number;
+  length: number;
+  resolution?: string;
 };
 
 export type ParsedFile = {
@@ -17,6 +20,12 @@ export type ParserOptions = {
   text: string;
   layerIdPatterns: RegExp[];
   upstreamIdPatterns: RegExp[];
+  resolution?: {
+    enabled: boolean;
+    layerNames: Set<string>;
+    aliasToName: Record<string, string>;
+    separator: string;
+  };
   grouping: {
     start: string;
     end: string;
@@ -31,6 +40,48 @@ const GLOBAL_ID_REGEX = /^[A-Za-z](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 
 function isAllowedTokenChar(char: string): boolean {
   return /[A-Za-z0-9._-]/.test(char);
+}
+
+function isAllowedTokenCharWithResolution(
+  char: string,
+  allowResolution: boolean,
+  separator?: string
+): boolean {
+  if (allowResolution && separator && separator.length === 1 && char === separator) {
+    return true;
+  }
+  return isAllowedTokenChar(char);
+}
+
+function findResolutionSplit(
+  value: string,
+  separator: string
+): { id: string; level: string } | null {
+  if (!separator) {
+    return null;
+  }
+  let index = value.indexOf(separator);
+  while (index > 0) {
+    const candidate = value.slice(0, index);
+    if (GLOBAL_ID_REGEX.test(candidate)) {
+      return { id: candidate, level: value.slice(index + separator.length) };
+    }
+    index = value.indexOf(separator, index + separator.length);
+  }
+  return null;
+}
+
+function resolveResolutionLevel(
+  level: string,
+  options: ParserOptions["resolution"]
+): string | undefined {
+  if (!options) {
+    return undefined;
+  }
+  if (options.layerNames.has(level)) {
+    return level;
+  }
+  return options.aliasToName[level];
 }
 
 function buildContextSnippet(lines: string[], lineIndex: number): string[] {
@@ -74,12 +125,14 @@ function resolveTokenLineFromSegment(segment: string, startIndex: number): numbe
 function splitGroupingTokens(
   content: string,
   startLine: number,
-  separator: string
-): Array<{ raw: string; line: number }> {
-  const tokens: Array<{ raw: string; line: number }> = [];
+  separator: string,
+  baseOffset: number
+): Array<{ raw: string; line: number; offset: number }> {
+  const tokens: Array<{ raw: string; line: number; offset: number }> = [];
   let index = 0;
   let lineOffset = 0;
   let segmentStartLineOffset = 0;
+  let segmentStartIndex = 0;
   let segment = "";
 
   const pushSegment = () => {
@@ -91,7 +144,8 @@ function splitGroupingTokens(
         segmentStartLineOffset + resolveTokenLineFromSegment(raw, leadingWhitespace);
       tokens.push({
         raw: trimmed,
-        line: startLine + tokenLineOffset
+        line: startLine + tokenLineOffset,
+        offset: baseOffset + segmentStartIndex + leadingWhitespace
       });
     }
     segment = "";
@@ -102,6 +156,7 @@ function splitGroupingTokens(
     if (separator.length > 0 && content.startsWith(separator, index)) {
       pushSegment();
       index += separator.length;
+      segmentStartIndex = index;
       continue;
     }
 
@@ -121,25 +176,59 @@ function handleToken(
   raw: string,
   normalized: string,
   line: number,
+  offset: number,
+  length: number,
   context: TokenContext,
   options: ParserOptions,
   lines: string[],
-  output: ParsedFile
+  output: ParsedFile,
+  contextFlags: { inQuote: boolean; inGrouping: boolean },
+  resolutionLevel?: string
 ): void {
   if (raw.length === 0) {
     return;
   }
 
+  let normalizedId = normalized;
+  let resolution: string | undefined;
+  const resolutionOptions = options.resolution;
+  if (resolutionOptions?.enabled) {
+    if (contextFlags.inQuote || contextFlags.inGrouping) {
+      const split = findResolutionSplit(normalized, resolutionOptions.separator);
+      if (split) {
+        output.issues.push(
+          createIssue("E111", "ResolutionOnNonDefinition", options.filePath, line, lines)
+        );
+        normalizedId = split.id;
+      }
+    } else if (resolutionLevel !== undefined) {
+      const resolved = resolveResolutionLevel(resolutionLevel, resolutionOptions);
+      if (!resolved) {
+        output.issues.push(
+          createIssue(
+            "E110",
+            `UnknownResolutionLevel: ${resolutionLevel}`,
+            options.filePath,
+            line,
+            lines
+          )
+        );
+      } else {
+        resolution = resolved;
+      }
+    }
+  }
+
   const matchesLayer =
-    options.layerIdPatterns.length > 0 && matchesAny(options.layerIdPatterns, normalized);
+    options.layerIdPatterns.length > 0 && matchesAny(options.layerIdPatterns, normalizedId);
   const matchesUpstream =
-    options.upstreamIdPatterns.length > 0 && matchesAny(options.upstreamIdPatterns, normalized);
+    options.upstreamIdPatterns.length > 0 && matchesAny(options.upstreamIdPatterns, normalizedId);
 
   if (!matchesLayer && !matchesUpstream) {
     return;
   }
 
-  const globalValid = GLOBAL_ID_REGEX.test(normalized);
+  const globalValid = GLOBAL_ID_REGEX.test(normalizedId);
   if (!globalValid) {
     output.issues.push(
       createIssue(
@@ -155,11 +244,11 @@ function handleToken(
 
   const eligibleDefinition = context === "definition";
   if (matchesLayer && eligibleDefinition) {
-    output.definitions.push({ id: normalized, raw, line });
+    output.definitions.push({ id: normalizedId, raw, line, offset, length, resolution });
     return;
   }
 
-  output.references.push({ id: normalized, raw, line });
+  output.references.push({ id: normalizedId, raw, line, offset, length, resolution });
 }
 
 export function parseLayerFile(options: ParserOptions): ParsedFile {
@@ -177,15 +266,32 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
   let inQuote: "'" | '"' | null = null;
   let inGrouping = false;
   let groupingStartLine = 1;
+  let groupingStartIndex = 0;
   let groupingBuffer = "";
   let tokenBuffer = "";
   let tokenLine = 1;
+  let tokenStartIndex = 0;
 
-  const flushToken = (context: TokenContext) => {
+  const flushToken = (context: TokenContext, resolutionLevel?: string, tokenLength?: number) => {
     if (tokenBuffer.length === 0) {
       return;
     }
-    handleToken(tokenBuffer, tokenBuffer, tokenLine, context, options, lines, output);
+    handleToken(
+      tokenBuffer,
+      tokenBuffer,
+      tokenLine,
+      tokenStartIndex,
+      tokenLength ?? tokenBuffer.length,
+      context,
+      options,
+      lines,
+      output,
+      {
+        inQuote: false,
+        inGrouping: false
+      },
+      resolutionLevel
+    );
     tokenBuffer = "";
   };
 
@@ -205,7 +311,12 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
   while (index < options.text.length) {
     if (inGrouping) {
       if (groupingEnd.length > 0 && options.text.startsWith(groupingEnd, index)) {
-        const tokens = splitGroupingTokens(groupingBuffer, groupingStartLine, separator);
+        const tokens = splitGroupingTokens(
+          groupingBuffer,
+          groupingStartLine,
+          separator,
+          groupingStartIndex
+        );
         if (tokens.length === 0) {
           output.issues.push(
             createIssue(
@@ -235,7 +346,21 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
                 continue;
               }
             }
-            handleToken(original, normalized, token.line, "reference", options, lines, output);
+            handleToken(
+              original,
+              normalized,
+              token.line,
+              token.offset,
+              original.trim().length,
+              "reference",
+              options,
+              lines,
+              output,
+              {
+                inQuote: false,
+                inGrouping: true
+              }
+            );
           }
         }
 
@@ -251,26 +376,26 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
       continue;
     }
 
-    const isQuote = options.text[index] === '"' || options.text[index] === "'";
     const isWhitespace = /\s/.test(options.text[index]);
     const isSeparator =
       separator.length > 0 && options.text.startsWith(separator, index);
     const isStartGrouping =
-      !inQuote && groupingStart.length > 0 && options.text.startsWith(groupingStart, index);
+      groupingStart.length > 0 && options.text.startsWith(groupingStart, index);
     const isEndGrouping =
-      !inQuote && groupingEnd.length > 0 && options.text.startsWith(groupingEnd, index);
+      groupingEnd.length > 0 && options.text.startsWith(groupingEnd, index);
 
     if (isStartGrouping) {
-      flushToken(inQuote ? "reference" : "definition");
+      flushToken("definition");
       inGrouping = true;
       groupingStartLine = line;
+      groupingStartIndex = index + groupingStart.length;
       groupingBuffer = "";
       advance(groupingStart.length);
       continue;
     }
 
     if (isEndGrouping) {
-      flushToken(inQuote ? "reference" : "definition");
+      flushToken("definition");
       output.issues.push(
         createIssue("E010", "Malformed grouping", options.filePath, line, lines)
       );
@@ -278,40 +403,50 @@ export function parseLayerFile(options: ParserOptions): ParsedFile {
       continue;
     }
 
-    if (isQuote && !inQuote) {
-      flushToken("definition");
-      inQuote = options.text[index] as "'" | '"';
-      advance(1);
-      continue;
-    }
-
-    if (isQuote && inQuote === options.text[index]) {
-      flushToken("reference");
-      inQuote = null;
-      advance(1);
-      continue;
-    }
-
     if (isSeparator) {
-      flushToken(inQuote ? "reference" : "definition");
+      flushToken("definition");
       advance(separator.length);
       continue;
     }
 
-    if (isWhitespace || !isAllowedTokenChar(options.text[index])) {
-      flushToken(inQuote ? "reference" : "definition");
+    if (!inGrouping && options.resolution?.enabled && tokenBuffer.length > 0) {
+      const separator = options.resolution.separator;
+      if (separator.length > 0 && options.text.startsWith(separator, index)) {
+        let scanIndex = index + separator.length;
+        let resolutionLevel = "";
+        while (scanIndex < options.text.length && isAllowedTokenChar(options.text[scanIndex])) {
+          resolutionLevel += options.text[scanIndex];
+          scanIndex += 1;
+        }
+        const tokenLength = tokenBuffer.length + separator.length + resolutionLevel.length;
+        flushToken("definition", resolutionLevel, tokenLength);
+        advance(separator.length + resolutionLevel.length);
+        continue;
+      }
+    }
+
+    if (
+      isWhitespace ||
+      !isAllowedTokenCharWithResolution(
+        options.text[index],
+        false,
+        options.resolution?.separator
+      )
+    ) {
+      flushToken("definition");
       advance(1);
       continue;
     }
 
     if (tokenBuffer.length === 0) {
       tokenLine = line;
+      tokenStartIndex = index;
     }
     tokenBuffer += options.text[index];
     advance(1);
   }
 
-  flushToken(inQuote ? "reference" : "definition");
+  flushToken("definition");
 
   if (inGrouping) {
     output.issues.push(
